@@ -185,3 +185,39 @@ class TestApplyUpdate:
             '    result = 1\n'
             '    return result + 1'
         )
+
+class TestApplyPatchSecurity:
+    def test_apply_delete_denied(self):
+        patch = """\
+*** Begin Patch
+*** Delete File: ~/.ssh/id_rsa
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def read_file(self, path): return SimpleNamespace(error=None)
+            def _exec(self, cmd): return SimpleNamespace(exit_code=0)
+            def _escape_shell_arg(self, arg): return f"'{arg}'"
+            def _check_lint(self, path): return SimpleNamespace(to_dict=lambda: {})
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "Access denied" in result.error
+
+    def test_apply_move_denied(self):
+        patch = """\
+*** Begin Patch
+*** Move File: ~/.ssh/id_rsa -> /tmp/rsa
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def _exec(self, cmd): return SimpleNamespace(exit_code=0)
+            def _escape_shell_arg(self, arg): return f"'{arg}'"
+            def _check_lint(self, path): return SimpleNamespace(to_dict=lambda: {})
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "Access denied" in result.error
