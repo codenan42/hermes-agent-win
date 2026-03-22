@@ -3353,14 +3353,21 @@ class AIAgent:
         ):
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = list(api_messages)
+        for idx, msg in enumerate(transformed):
             if not isinstance(msg, dict):
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
+
+            # We must call _preprocess_anthropic_content for every message if the
+            # whole list is being transformed (one or more images were detected).
+            # It handles text-only messages by converting them to the list format
+            # or normalizing multimodal parts.
+            new_msg = msg.copy()
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed[idx] = new_msg
         return transformed
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
@@ -3438,20 +3445,40 @@ class AIAgent:
                     break
 
         if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
+            # Shallow copy the message list to avoid modifying api_messages
+            sanitized_messages = list(api_messages)
+            for idx, msg in enumerate(sanitized_messages):
                 if not isinstance(msg, dict):
                     continue
 
-                # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
+                # Check if this specific message needs modification
+                msg_needs_change = "codex_reasoning_items" in msg
+                if not msg_needs_change:
+                    tool_calls = msg.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        for tool_call in tool_calls:
+                            if isinstance(tool_call, dict) and ("call_id" in tool_call or "response_item_id" in tool_call):
+                                msg_needs_change = True
+                                break
 
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
+                if msg_needs_change:
+                    # Only shallow copy and modify messages that actually contain Codex fields
+                    new_msg = msg.copy()
+                    new_msg.pop("codex_reasoning_items", None)
+
+                    tool_calls = new_msg.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        new_tool_calls = []
+                        for tool_call in tool_calls:
+                            if isinstance(tool_call, dict) and ("call_id" in tool_call or "response_item_id" in tool_call):
+                                new_tc = tool_call.copy()
+                                new_tc.pop("call_id", None)
+                                new_tc.pop("response_item_id", None)
+                                new_tool_calls.append(new_tc)
+                            else:
+                                new_tool_calls.append(tool_call)
+                        new_msg["tool_calls"] = new_tool_calls
+                    sanitized_messages[idx] = new_msg
 
         provider_preferences = {}
         if self.providers_allowed:
