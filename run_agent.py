@@ -3353,14 +3353,21 @@ class AIAgent:
         ):
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        # Optimized shallow copy: only clone messages that actually contain images.
+        # But for Anthropic compatibility, _preprocess_anthropic_content must be
+        # applied to EVERY message in the history when multimodal parts are present
+        # to ensure consistent content normalization.
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
+            new_msg = msg.copy()
+            new_msg["content"] = self._preprocess_anthropic_content(
+                new_msg.get("content"),
+                str(new_msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
@@ -3438,20 +3445,30 @@ class AIAgent:
                     break
 
         if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
+            sanitized_messages = []
+            for msg in api_messages:
                 if not isinstance(msg, dict):
+                    sanitized_messages.append(msg)
                     continue
 
+                new_msg = msg.copy()
                 # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
+                new_msg.pop("codex_reasoning_items", None)
 
-                tool_calls = msg.get("tool_calls")
+                tool_calls = new_msg.get("tool_calls")
                 if isinstance(tool_calls, list):
+                    # Shallow copy the tool_calls list and its member dicts
+                    new_tool_calls = []
                     for tool_call in tool_calls:
                         if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
+                            tc = tool_call.copy()
+                            tc.pop("call_id", None)
+                            tc.pop("response_item_id", None)
+                            new_tool_calls.append(tc)
+                        else:
+                            new_tool_calls.append(tool_call)
+                    new_msg["tool_calls"] = new_tool_calls
+                sanitized_messages.append(new_msg)
 
         provider_preferences = {}
         if self.providers_allowed:

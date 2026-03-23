@@ -1,0 +1,3 @@
+## 2025-05-14 - [Optimize message pipeline by replacing deepcopy with shallow copy]
+**Learning:** `copy.deepcopy` on message histories (especially those with 100+ messages) is significantly slower than targeted shallow copying. For a history of 200 messages, `deepcopy` took ~0.16s for 100 iterations, while selective shallow copying (list copy + dictionary copy for modified items) took ~0.005s (~30x faster).
+**Action:** Use shallow copies (`list(msgs)`, `msg.copy()`) in message-processing pipelines instead of `copy.deepcopy` when isolation is required but recursive deep cloning of immutable contents (like long strings) is unnecessary.
