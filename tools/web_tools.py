@@ -48,6 +48,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
+from agent.redact import redact_sensitive_text
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -516,6 +517,13 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         results_count = len(web_results)
         logger.info("Found %d search results", results_count)
         
+        # Redact any secrets in titles/descriptions before returning
+        for r in web_results:
+            if "title" in r and r["title"]:
+                r["title"] = redact_sensitive_text(r["title"])
+            if "description" in r and r["description"]:
+                r["description"] = redact_sensitive_text(r["description"])
+
         # Build response with just search metadata (URLs, titles, descriptions)
         response_data = {
             "success": True,
@@ -771,16 +779,21 @@ async def web_extract_tool(
                 content_length = len(result.get('raw_content', ''))
                 logger.info("%s (%d characters)", url, content_length)
         
-        # Trim output to minimal fields per entry: title, content, error
-        trimmed_results = [
-            {
+        # Trim output and redact content
+        trimmed_results = []
+        for r in response.get("results", []):
+            title = redact_sensitive_text(r.get("title", ""))
+            content = redact_sensitive_text(r.get("content", ""))
+            error = r.get("error")
+            if error:
+                error = redact_sensitive_text(error)
+
+            trimmed_results.append({
                 "url": r.get("url", ""),
-                "title": r.get("title", ""),
-                "content": r.get("content", ""),
-                "error": r.get("error"),
-            }
-            for r in response.get("results", [])
-        ]
+                "title": title,
+                "content": content,
+                "error": error,
+            })
         trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:
@@ -1067,15 +1080,20 @@ async def web_crawl_tool(
                 content_length = len(result.get('content', ''))
                 logger.info("%s (%d characters)", page_url, content_length)
         
-        # Trim output to minimal fields per entry: title, content, error
-        trimmed_results = [
-            {
-                "title": r.get("title", ""),
-                "content": r.get("content", ""),
-                "error": r.get("error")
-            }
-            for r in response.get("results", [])
-        ]
+        # Trim output and redact content
+        trimmed_results = []
+        for r in response.get("results", []):
+            title = redact_sensitive_text(r.get("title", ""))
+            content = redact_sensitive_text(r.get("content", ""))
+            error = r.get("error")
+            if error:
+                error = redact_sensitive_text(error)
+
+            trimmed_results.append({
+                "title": title,
+                "content": content,
+                "error": error,
+            })
         trimmed_response = {"results": trimmed_results}
         
         result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
