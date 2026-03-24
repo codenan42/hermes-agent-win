@@ -75,14 +75,35 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
+def _is_path_denied(path: str) -> bool:
+    """Return True if path is on the restricted list (read/write/delete)."""
+    if path is None:
+        return True  # Fail closed
+
+    # Expand ~ and resolve symlinks for robust matching
     resolved = os.path.realpath(os.path.expanduser(path))
+
+    # Check exact restricted paths
     if resolved in WRITE_DENIED_PATHS:
         return True
+
+    # Check restricted directory prefixes
     for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
+        # Match if the path is INSIDE the restricted directory OR is the directory itself.
+        # WRITE_DENIED_PREFIXES entries end with os.sep.
+        if resolved.startswith(prefix) or resolved == prefix.rstrip(os.sep):
             return True
+
+    # Defense-in-depth: check for common sensitive patterns regardless of home expansion.
+    # This helps if host vs container home paths differ.
+    sensitive_patterns = [
+        '.ssh/id_rsa', '.ssh/id_ed25519', '.ssh/authorized_keys', '.ssh/config',
+        '.hermes/.env', '.aws/credentials', '.kube/config'
+    ]
+    for pattern in sensitive_patterns:
+        if pattern in resolved:
+            return True
+
     return False
 
 
@@ -447,6 +468,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block reads of sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected system/credential file.")
         
         # Clamp limit
         limit = min(limit, MAX_LINES)
@@ -637,7 +662,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
@@ -694,7 +719,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
