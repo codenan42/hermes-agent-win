@@ -3438,20 +3438,35 @@ class AIAgent:
                     break
 
         if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
+            sanitized_messages = []
+            for msg in api_messages:
                 if not isinstance(msg, dict):
+                    sanitized_messages.append(msg)
                     continue
 
-                # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
+                # Optimized sanitization: only copy messages and tool_calls
+                # that actually need modification to avoid expensive deepcopy.
+                m_tc = msg.get("tool_calls")
+                has_codex_tc = False
+                if isinstance(m_tc, list):
+                    for tc in m_tc:
+                        if isinstance(tc, dict) and ("call_id" in tc or "response_item_id" in tc):
+                            has_codex_tc = True
+                            break
 
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
+                if "codex_reasoning_items" in msg or has_codex_tc:
+                    msg = msg.copy()
+                    msg.pop("codex_reasoning_items", None)
+                    if has_codex_tc:
+                        new_tool_calls = []
+                        for tc in m_tc:
+                            if isinstance(tc, dict) and ("call_id" in tc or "response_item_id" in tc):
+                                tc = tc.copy()
+                                tc.pop("call_id", None)
+                                tc.pop("response_item_id", None)
+                            new_tool_calls.append(tc)
+                        msg["tool_calls"] = new_tool_calls
+                sanitized_messages.append(msg)
 
         provider_preferences = {}
         if self.providers_allowed:
