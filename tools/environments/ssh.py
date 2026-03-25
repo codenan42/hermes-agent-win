@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import os
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment
@@ -61,6 +62,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
+        # Use portable path for ControlPath
         cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         cmd.extend(["-o", "ControlMaster=auto"])
         cmd.extend(["-o", "ControlPersist=300"])
@@ -91,6 +93,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
+        # Note: this is the prefix for files ON THE REMOTE HOST.
+        # Remote hosts are assumed to be POSIX/Linux.
         return f"/tmp/hermes-ssh-{self._session_id}"
 
     def _spawn_shell_process(self) -> subprocess.Popen:

@@ -24,14 +24,19 @@ def load_hermes_dotenv(
     """Load Hermes environment files with user config taking precedence.
 
     Behavior:
-    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - `~/.hermes/.env` (or platform equivalent) overrides stale shell-exported values when present.
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    if hermes_home:
+        home_path = Path(hermes_home)
+    else:
+        from hermes_cli.config import get_hermes_home
+        home_path = get_hermes_home()
+
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

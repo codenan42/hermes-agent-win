@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+import tempfile
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -20,7 +21,7 @@ from tools.interrupt import is_interrupted
 _OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
-# These are loaded from ~/.hermes/.env for Hermes' own LLM/provider calls
+# These are loaded from .env for Hermes' own LLM/provider calls
 # but can break external CLIs (e.g. codex) that also honor them.
 # See: https://github.com/NousResearch/hermes-agent/issues/1002
 #
@@ -184,11 +185,8 @@ def _find_bash() -> str:
         if candidate and os.path.isfile(candidate):
             return candidate
 
-    raise RuntimeError(
-        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
-    )
+    # Fallback to cmd.exe if Git Bash is not found
+    return "cmd.exe"
 
 
 # Backward compat — process_registry.py imports this name
@@ -260,6 +258,10 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
             run_env[k] = v
+
+    if _IS_WINDOWS:
+        return run_env
+
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
@@ -311,27 +313,39 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/hermes-local-{self._session_id}"
+        tmpdir = tempfile.gettempdir()
+        return os.path.join(tmpdir, f"hermes-local-{self._session_id}")
 
     def _spawn_shell_process(self) -> subprocess.Popen:
         user_shell = _find_bash()
         run_env = _make_run_env(self.env)
+
+        # Determine shell flags based on shell type
+        if user_shell.endswith("cmd.exe"):
+            args = [user_shell]
+        else:
+            args = [user_shell, "-l"]
+
         return subprocess.Popen(
-            [user_shell, "-l"],
+            args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
             env=run_env,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0,
         )
 
     def _read_temp_files(self, *paths: str) -> list[str]:
         results = []
         for path in paths:
             if os.path.exists(path):
-                with open(path) as f:
-                    results.append(f.read())
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                        results.append(f.read())
+                except OSError:
+                    results.append("")
             else:
                 results.append("")
         return results
@@ -339,6 +353,9 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def _kill_shell_children(self):
         if self._shell_pid is None:
             return
+        if _IS_WINDOWS:
+            return
+
         try:
             subprocess.run(
                 ["pkill", "-P", str(self._shell_pid)],
@@ -350,7 +367,10 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):
             if os.path.exists(f):
-                os.remove(f)
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
@@ -367,17 +387,29 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             effective_stdin = stdin_data
 
         user_shell = _find_bash()
-        fenced_cmd = (
-            f"printf '{_OUTPUT_FENCE}';"
-            f" {exec_command};"
-            f" __hermes_rc=$?;"
-            f" printf '{_OUTPUT_FENCE}';"
-            f" exit $__hermes_rc"
-        )
+
+        if user_shell.endswith("cmd.exe"):
+            # CMD fallback with basic fencing support via echo
+            fenced_cmd = (
+                f"echo {_OUTPUT_FENCE} "
+                f"&& {exec_command} "
+                f"&& echo {_OUTPUT_FENCE}"
+            )
+            args = [user_shell, "/C", fenced_cmd]
+        else:
+            fenced_cmd = (
+                f"printf '{_OUTPUT_FENCE}';"
+                f" {exec_command};"
+                f" __hermes_rc=$?;"
+                f" printf '{_OUTPUT_FENCE}';"
+                f" exit $__hermes_rc"
+            )
+            args = [user_shell, "-lic", fenced_cmd]
+
         run_env = _make_run_env(self.env)
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", fenced_cmd],
+            args,
             text=True,
             cwd=work_dir,
             env=run_env,
@@ -387,6 +419,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0,
         )
 
         if effective_stdin is not None:
@@ -404,7 +437,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             try:
                 for line in proc.stdout:
                     _output_chunks.append(line)
-            except ValueError:
+            except (ValueError, OSError):
                 pass
             finally:
                 try:
@@ -420,7 +453,13 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             if is_interrupted():
                 try:
                     if _IS_WINDOWS:
-                        proc.terminate()
+                        # Fallback for signal in non-Windows environments during lint
+                        ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", 1)
+                        os.kill(proc.pid, ctrl_break)
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            proc.terminate()
                     else:
                         pgid = os.getpgid(proc.pid)
                         os.killpg(pgid, signal.SIGTERM)
@@ -428,7 +467,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                             proc.wait(timeout=1.0)
                         except subprocess.TimeoutExpired:
                             os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                except (ProcessLookupError, PermissionError, AttributeError):
                     proc.kill()
                 reader.join(timeout=2)
                 return {
@@ -438,15 +477,21 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             if time.monotonic() > deadline:
                 try:
                     if _IS_WINDOWS:
-                        proc.terminate()
+                        ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", 1)
+                        os.kill(proc.pid, ctrl_break)
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            proc.terminate()
                     else:
                         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
+                except (ProcessLookupError, PermissionError, AttributeError):
                     proc.kill()
                 reader.join(timeout=2)
                 return self._timeout_result(effective_timeout)
             time.sleep(0.2)
 
         reader.join(timeout=5)
-        output = _extract_fenced_output("".join(_output_chunks))
+        raw_output = "".join(_output_chunks)
+        output = _extract_fenced_output(raw_output)
         return {"output": output, "returncode": proc.returncode}

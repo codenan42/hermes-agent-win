@@ -1,9 +1,9 @@
 """
 Configuration management for Hermes Agent.
 
-Config files are stored in ~/.hermes/ for easy access:
-- ~/.hermes/config.yaml  - All settings (model, toolsets, terminal, etc.)
-- ~/.hermes/.env         - API keys and secrets
+Config files are stored in a platform-appropriate home directory:
+- Linux/macOS: ~/.hermes/
+- Windows: %LOCALAPPDATA%/Hermes/
 
 This module provides:
 - hermes config          - Show current configuration
@@ -18,7 +18,6 @@ import re
 import stat
 import sys
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -37,8 +36,19 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 # =============================================================================
 
 def get_hermes_home() -> Path:
-    """Get the Hermes home directory (~/.hermes)."""
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    """Get the platform-appropriate Hermes home directory."""
+    env_home = os.getenv("HERMES_HOME")
+    if env_home:
+        return Path(env_home)
+
+    if _IS_WINDOWS:
+        # Use LocalAppData on Windows for platform-appropriate storage
+        app_data = os.getenv("LOCALAPPDATA")
+        if app_data:
+            return Path(app_data) / "Hermes"
+        return Path.home() / ".hermes"
+
+    return Path.home() / ".hermes"
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -79,11 +89,11 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists with secure permissions."""
+    """Ensure Hermes home directory structure exists with secure permissions."""
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     _secure_dir(home)
-    for subdir in ("cron", "sessions", "logs", "memories"):
+    for subdir in ("cron", "sessions", "logs", "memories", "sandboxes", "whatsapp"):
         d = home / subdir
         d.mkdir(parents=True, exist_ok=True)
         _secure_dir(d)
@@ -955,7 +965,7 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from ~/.hermes/config.yaml."""
+    """Load configuration from the appropriate Hermes home directory."""
     import copy
     ensure_hermes_home()
     config_path = get_config_path()
@@ -1077,7 +1087,7 @@ _COMMENTED_SECTIONS = """
 
 
 def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+    """Save configuration to platform-appropriate config.yaml."""
     from utils import atomic_yaml_write
 
     ensure_hermes_home()
@@ -1103,7 +1113,7 @@ def save_config(config: Dict[str, Any]):
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.hermes/.env."""
+    """Load environment variables from platform-appropriate .env."""
     env_path = get_env_path()
     env_vars = {}
     
@@ -1122,7 +1132,7 @@ def load_env() -> Dict[str, str]:
 
 
 def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
+    """Save or update a value in platform-appropriate .env."""
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
@@ -1210,7 +1220,7 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
+    """Get a value from .env or environment."""
     # Check environment first
     if key in os.environ:
         return os.environ[key]

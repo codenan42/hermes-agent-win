@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import subprocess
+import signal
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -204,6 +205,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0,
             )
             
             # Wait for the bridge to connect to WhatsApp.
@@ -297,13 +299,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._bridge_process:
             try:
                 # Kill the entire process group so child node processes die too
-                import signal
                 try:
                     if _IS_WINDOWS:
-                        self._bridge_process.terminate()
+                        os.kill(self._bridge_process.pid, signal.CTRL_BREAK_EVENT)
+                        await asyncio.sleep(1)
+                        if self._bridge_process.poll() is None:
+                            self._bridge_process.terminate()
                     else:
                         os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
+                except (ProcessLookupError, PermissionError, AttributeError):
                     self._bridge_process.terminate()
                 await asyncio.sleep(1)
                 if self._bridge_process.poll() is None:
@@ -312,7 +316,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             self._bridge_process.kill()
                         else:
                             os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
+                    except (ProcessLookupError, PermissionError, AttributeError):
                         self._bridge_process.kill()
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")

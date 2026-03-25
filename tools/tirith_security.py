@@ -30,6 +30,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -100,20 +101,14 @@ _install_thread: threading.Thread | None = None
 _MARKER_TTL = 86400  # 24 hours
 
 
-def _get_hermes_home() -> str:
-    """Return the Hermes home directory, respecting HERMES_HOME env var.
-
-    Matches the convention used throughout the codebase (hermes_cli.config,
-    cli.py, gateway/run.py, etc.) so tirith state stays inside the active
-    profile and tests get automatic isolation via conftest's HERMES_HOME
-    monkeypatch.
-    """
-    return os.getenv("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+def _get_active_hermes_home() -> str:
+    """Return the Hermes home directory, respecting platform and environment."""
+    return str(get_hermes_home())
 
 
 def _failure_marker_path() -> str:
     """Return the path to the install-failure marker file."""
-    return os.path.join(_get_hermes_home(), ".tirith-install-failed")
+    return os.path.join(_get_active_hermes_home(), ".tirith-install-failed")
 
 
 def _read_failure_reason() -> str | None:
@@ -176,8 +171,8 @@ def _clear_install_failed():
 
 
 def _hermes_bin_dir() -> str:
-    """Return $HERMES_HOME/bin, creating it if needed."""
-    d = os.path.join(_get_hermes_home(), "bin")
+    """Return active_hermes_home/bin, creating it if needed."""
+    d = os.path.join(_get_active_hermes_home(), "bin")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -191,6 +186,8 @@ def _detect_target() -> str | None:
         plat = "apple-darwin"
     elif system == "Linux":
         plat = "unknown-linux-gnu"
+    elif system == "Windows":
+        plat = "pc-windows-msvc"
     else:
         return None
 
@@ -295,7 +292,8 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                      platform.system(), platform.machine())
         return None, "unsupported_platform"
 
-    archive_name = f"tirith-{target}.tar.gz"
+    binary_name = "tirith.exe" if platform.system() == "Windows" else "tirith"
+    archive_name = f"tirith-{target}.tar.gz" if platform.system() != "Windows" else f"tirith-{target}.zip"
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
     tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
@@ -315,9 +313,6 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             return None, "download_failed"
 
         # Cosign provenance verification is mandatory for auto-install.
-        # SHA-256 alone only proves self-consistency (both files come from the
-        # same endpoint), not provenance. Without cosign we cannot verify the
-        # release was produced by the expected GitHub Actions workflow.
         try:
             _download_file(f"{base_url}/checksums.txt.sig", sig_path)
             _download_file(f"{base_url}/checksums.txt.pem", cert_path)
@@ -326,8 +321,6 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                 "Install tirith manually or install cosign for auto-install.", exc)
             return None, "cosign_artifacts_unavailable"
 
-        # Check cosign availability before attempting verification so we can
-        # distinguish "not installed" (retryable) from "installed but broken."
         if not shutil.which("cosign"):
             log("tirith install skipped: cosign not found on PATH. "
                 "Install cosign for auto-install, or install tirith manually.")
@@ -335,7 +328,6 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
 
         cosign_result = _verify_cosign(checksums_path, sig_path, cert_path)
         if cosign_result is not True:
-            # False = verification rejected, None = execution failure (timeout/OSError)
             if cosign_result is None:
                 log("tirith install aborted: cosign execution failed")
                 return None, "cosign_exec_failed"
@@ -346,23 +338,31 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
         if not _verify_checksum(archive_path, checksums_path, archive_name):
             return None, "checksum_failed"
 
-        with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
-                log("tirith binary not found in archive")
-                return None, "binary_not_in_archive"
+        if archive_name.endswith(".tar.gz"):
+            with tarfile.open(archive_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    if member.name == "tirith" or member.name.endswith("/tirith"):
+                        if ".." in member.name: continue
+                        member.name = "tirith"
+                        tar.extract(member, tmpdir)
+                        break
+        else:
+            import zipfile
+            with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                for name in zip_ref.namelist():
+                    if name == "tirith.exe" or name.endswith("/tirith.exe"):
+                        if ".." in name: continue
+                        zip_ref.extract(name, tmpdir)
+                        if "/" in name:
+                            shutil.move(os.path.join(tmpdir, name), os.path.join(tmpdir, "tirith.exe"))
+                        break
 
-        src = os.path.join(tmpdir, "tirith")
-        dest = os.path.join(_hermes_bin_dir(), "tirith")
+        src = os.path.join(tmpdir, binary_name)
+        dest = os.path.join(_hermes_bin_dir(), binary_name)
+        if os.path.exists(dest): os.remove(dest)
         shutil.move(src, dest)
-        os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        if platform.system() != "Windows":
+            os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         logger.info("tirith installed to %s", dest)
         return dest, ""
@@ -377,36 +377,21 @@ def _is_explicit_path(configured_path: str) -> bool:
 
 
 def _resolve_tirith_path(configured_path: str) -> str:
-    """Resolve the tirith binary path, auto-installing if necessary.
-
-    If the user explicitly set a path (anything other than the bare "tirith"
-    default), that path is authoritative — we never fall through to
-    auto-download a different binary.
-
-    For the default "tirith":
-    1. PATH lookup via shutil.which
-    2. $HERMES_HOME/bin/tirith (previously auto-installed)
-    3. Auto-install from GitHub releases → $HERMES_HOME/bin/tirith
-
-    Failed installs are cached for the process lifetime (and persisted to
-    disk for 24h) to avoid repeated network attempts.
-    """
+    """Resolve the tirith binary path, auto-installing if necessary."""
     global _resolved_path, _install_failure_reason
 
-    # Fast path: successfully resolved on a previous call.
     if _resolved_path is not None and _resolved_path is not _INSTALL_FAILED:
         return _resolved_path
 
+    binary_name = "tirith.exe" if platform.system() == "Windows" else "tirith"
     expanded = os.path.expanduser(configured_path)
     explicit = _is_explicit_path(configured_path)
     install_failed = _resolved_path is _INSTALL_FAILED
 
-    # Explicit path: check it and stop. Never auto-download a replacement.
     if explicit:
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+        if os.path.isfile(expanded) and (platform.system() == "Windows" or os.access(expanded, os.X_OK)):
             _resolved_path = expanded
             return expanded
-        # Also try shutil.which in case it's a bare name on PATH
         found = shutil.which(expanded)
         if found:
             _resolved_path = found
@@ -416,29 +401,22 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _install_failure_reason = "explicit_path_missing"
         return expanded
 
-    # Default "tirith" — always re-run cheap local checks so a manual
-    # install is picked up even after a previous network failure (P2 fix:
-    # long-lived gateway/CLI recovers without restart).
-    found = shutil.which("tirith")
+    found = shutil.which(binary_name)
     if found:
         _resolved_path = found
         _install_failure_reason = ""
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+    hermes_bin = os.path.join(_hermes_bin_dir(), binary_name)
+    if os.path.isfile(hermes_bin) and (platform.system() == "Windows" or os.access(hermes_bin, os.X_OK)):
         _resolved_path = hermes_bin
         _install_failure_reason = ""
         _clear_install_failed()
         return hermes_bin
 
-    # Local checks failed.  If a previous install attempt already failed,
-    # skip the network retry — UNLESS the failure was "cosign_missing" and
-    # cosign is now available (retryable cause resolved in-process).
     if install_failed:
         if _install_failure_reason == "cosign_missing" and shutil.which("cosign"):
-            # Retryable cause resolved — clear sentinel and fall through to retry
             _resolved_path = None
             _install_failure_reason = ""
             _clear_install_failed()
@@ -446,15 +424,9 @@ def _resolve_tirith_path(configured_path: str) -> str:
         else:
             return expanded
 
-    # If a background install thread is running, don't start a parallel one —
-    # return the configured path; the OSError handler in check_command_security
-    # will apply fail_open until the thread finishes.
     if _install_thread is not None and _install_thread.is_alive():
         return expanded
 
-    # Check disk failure marker before attempting network download.
-    # Preserve the marker's real reason so in-memory retry logic can
-    # detect retryable causes (e.g. cosign_missing) without restart.
     disk_reason = _read_failure_reason()
     if disk_reason is not None and _is_install_failed_on_disk():
         _resolved_path = _INSTALL_FAILED
@@ -468,7 +440,6 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _clear_install_failed()
         return installed
 
-    # Install failed — cache the miss and persist reason to disk
     _resolved_path = _INSTALL_FAILED
     _install_failure_reason = reason
     _mark_install_failed(reason)
@@ -479,19 +450,18 @@ def _background_install(*, log_failures: bool = True):
     """Background thread target: download and install tirith."""
     global _resolved_path, _install_failure_reason
     with _install_lock:
-        # Double-check after acquiring lock (another thread may have resolved)
         if _resolved_path is not None:
             return
 
-        # Re-check local paths (may have been installed by another process)
-        found = shutil.which("tirith")
+        binary_name = "tirith.exe" if platform.system() == "Windows" else "tirith"
+        found = shutil.which(binary_name)
         if found:
             _resolved_path = found
             _install_failure_reason = ""
             return
 
-        hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-        if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+        hermes_bin = os.path.join(_hermes_bin_dir(), binary_name)
+        if os.path.isfile(hermes_bin) and (platform.system() == "Windows" or os.access(hermes_bin, os.X_OK)):
             _resolved_path = hermes_bin
             _install_failure_reason = ""
             return
@@ -508,22 +478,16 @@ def _background_install(*, log_failures: bool = True):
 
 
 def ensure_installed(*, log_failures: bool = True):
-    """Ensure tirith is available, downloading in background if needed.
-
-    Quick PATH/local checks are synchronous; network download runs in a
-    daemon thread so startup never blocks. Safe to call multiple times.
-    Returns the resolved path immediately if available, or None.
-    """
+    """Ensure tirith is available, downloading in background if needed."""
     global _resolved_path, _install_thread, _install_failure_reason
 
     cfg = _load_security_config()
     if not cfg["tirith_enabled"]:
         return None
 
-    # Already resolved from a previous call
     if _resolved_path is not None and _resolved_path is not _INSTALL_FAILED:
         path = _resolved_path
-        if os.path.isfile(path) and os.access(path, os.X_OK):
+        if os.path.isfile(path) and (platform.system() == "Windows" or os.access(path, os.X_OK)):
             return path
         return None
 
@@ -531,9 +495,8 @@ def ensure_installed(*, log_failures: bool = True):
     explicit = _is_explicit_path(configured_path)
     expanded = os.path.expanduser(configured_path)
 
-    # Explicit path: synchronous check only, no download
     if explicit:
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+        if os.path.isfile(expanded) and (platform.system() == "Windows" or os.access(expanded, os.X_OK)):
             _resolved_path = expanded
             return expanded
         found = shutil.which(expanded)
@@ -544,22 +507,21 @@ def ensure_installed(*, log_failures: bool = True):
         _install_failure_reason = "explicit_path_missing"
         return None
 
-    # Default "tirith" — quick local checks first (no network)
-    found = shutil.which("tirith")
+    binary_name = "tirith.exe" if platform.system() == "Windows" else "tirith"
+    found = shutil.which(binary_name)
     if found:
         _resolved_path = found
         _install_failure_reason = ""
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+    hermes_bin = os.path.join(_hermes_bin_dir(), binary_name)
+    if os.path.isfile(hermes_bin) and (platform.system() == "Windows" or os.access(hermes_bin, os.X_OK)):
         _resolved_path = hermes_bin
         _install_failure_reason = ""
         _clear_install_failed()
         return hermes_bin
 
-    # If previously failed in-memory, check if the cause is now resolved
     if _resolved_path is _INSTALL_FAILED:
         if _install_failure_reason == "cosign_missing" and shutil.which("cosign"):
             _resolved_path = None
@@ -568,16 +530,12 @@ def ensure_installed(*, log_failures: bool = True):
         else:
             return None
 
-    # Check disk failure marker (skip network attempt for 24h, unless
-    # the cosign_missing reason was resolved — handled by _is_install_failed_on_disk).
-    # Preserve the marker's real reason for in-memory retry logic.
     disk_reason = _read_failure_reason()
     if disk_reason is not None and _is_install_failed_on_disk():
         _resolved_path = _INSTALL_FAILED
         _install_failure_reason = disk_reason
         return None
 
-    # Need to download — launch background thread so startup doesn't block
     if _install_thread is None or not _install_thread.is_alive():
         _install_thread = threading.Thread(
             target=_background_install,
@@ -586,7 +544,7 @@ def ensure_installed(*, log_failures: bool = True):
         )
         _install_thread.start()
 
-    return None  # Not available yet; commands will fail-open until ready
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -598,15 +556,7 @@ _MAX_SUMMARY_LEN = 500
 
 
 def check_command_security(command: str) -> dict:
-    """Run tirith security scan on a command.
-
-    Exit code determines action (0=allow, 1=block, 2=warn). JSON enriches
-    findings/summary. Spawn failures and timeouts respect fail_open config.
-    Programming errors propagate.
-
-    Returns:
-        {"action": "allow"|"warn"|"block", "findings": [...], "summary": str}
-    """
+    """Run tirith security scan on a command."""
     cfg = _load_security_config()
 
     if not cfg["tirith_enabled"]:
@@ -617,15 +567,17 @@ def check_command_security(command: str) -> dict:
     fail_open = cfg["tirith_fail_open"]
 
     try:
+        # Use posix shell for scan since it's the most common agent shell
+        shell_type = "posix"
+
         result = subprocess.run(
             [tirith_path, "check", "--json", "--non-interactive",
-             "--shell", "posix", "--", command],
+             "--shell", shell_type, "--", command],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
     except OSError as exc:
-        # Covers FileNotFoundError, PermissionError, exec format error
         logger.warning("tirith spawn failed: %s", exc)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith unavailable: {exc}"}
@@ -636,7 +588,6 @@ def check_command_security(command: str) -> dict:
             return {"action": "allow", "findings": [], "summary": f"tirith timed out ({timeout}s)"}
         return {"action": "block", "findings": [], "summary": f"tirith timed out (fail-closed)"}
 
-    # Map exit code to action
     exit_code = result.returncode
     if exit_code == 0:
         action = "allow"
@@ -645,13 +596,11 @@ def check_command_security(command: str) -> dict:
     elif exit_code == 2:
         action = "warn"
     else:
-        # Unknown exit code — respect fail_open
         logger.warning("tirith returned unexpected exit code %d", exit_code)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith exit code {exit_code} (fail-open)"}
         return {"action": "block", "findings": [], "summary": f"tirith exit code {exit_code} (fail-closed)"}
 
-    # Parse JSON for enrichment (never overrides the exit code verdict)
     findings = []
     summary = ""
     try:
@@ -660,7 +609,6 @@ def check_command_security(command: str) -> dict:
         findings = raw_findings[:_MAX_FINDINGS]
         summary = (data.get("summary", "") or "")[:_MAX_SUMMARY_LEN]
     except (json.JSONDecodeError, AttributeError):
-        # JSON parse failure degrades findings/summary, not the verdict
         logger.debug("tirith JSON parse failed, using exit code only")
         if action == "block":
             summary = "security issue detected (details unavailable)"
