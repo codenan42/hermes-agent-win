@@ -15,30 +15,32 @@ MARKER = {"type": "ephemeral"}
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker(self):
         msg = {"role": "tool", "content": "result"}
-        _apply_cache_marker(msg, MARKER)
-        assert msg["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert new_msg["cache_control"] == MARKER
+        # Original remains unmodified
+        assert "cache_control" not in msg
 
     def test_none_content_gets_top_level_marker(self):
         msg = {"role": "assistant", "content": None}
-        _apply_cache_marker(msg, MARKER)
-        assert msg["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert new_msg["cache_control"] == MARKER
 
     def test_empty_string_content_gets_top_level_marker(self):
         """Empty text blocks cannot have cache_control (Anthropic rejects them)."""
         msg = {"role": "assistant", "content": ""}
-        _apply_cache_marker(msg, MARKER)
-        assert msg["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert new_msg["cache_control"] == MARKER
         # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
-        assert msg["content"] == ""
+        assert new_msg["content"] == ""
 
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}
-        _apply_cache_marker(msg, MARKER)
-        assert isinstance(msg["content"], list)
-        assert len(msg["content"]) == 1
-        assert msg["content"][0]["type"] == "text"
-        assert msg["content"][0]["text"] == "Hello"
-        assert msg["content"][0]["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert isinstance(new_msg["content"], list)
+        assert len(new_msg["content"]) == 1
+        assert new_msg["content"][0]["type"] == "text"
+        assert new_msg["content"][0]["text"] == "Hello"
+        assert new_msg["content"][0]["cache_control"] == MARKER
 
     def test_list_content_last_item_gets_marker(self):
         msg = {
@@ -48,9 +50,9 @@ class TestApplyCacheMarker:
                 {"type": "text", "text": "Second"},
             ],
         }
-        _apply_cache_marker(msg, MARKER)
-        assert "cache_control" not in msg["content"][0]
-        assert msg["content"][1]["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert "cache_control" not in new_msg["content"][0]
+        assert new_msg["content"][1]["cache_control"] == MARKER
 
     def test_empty_list_content_no_crash(self):
         msg = {"role": "user", "content": []}
@@ -63,10 +65,12 @@ class TestApplyAnthropicCacheControl:
         result = apply_anthropic_cache_control([])
         assert result == []
 
-    def test_returns_deep_copy(self):
+    def test_returns_shallow_list_copy(self):
         msgs = [{"role": "user", "content": "Hello"}]
         result = apply_anthropic_cache_control(msgs)
         assert result is not msgs
+        # In the optimized version, messages WITH markers are copied,
+        # others might be shared. Turn 0 here gets a marker, so it IS copied.
         assert result[0] is not msgs[0]
         # Original should be unmodified
         assert "cache_control" not in msgs[0].get("content", "")
