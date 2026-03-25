@@ -171,9 +171,10 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    # shutil.which finds bash.exe if Git\bin is on PATH
+    # shutil.which finds bash.exe if Git\bin is on PATH.
+    # On Windows, we must skip the bash.exe in System32 which is just a WSL stub.
     found = shutil.which("bash")
-    if found:
+    if found and "system32" not in found.lower():
         return found
 
     # Check common Git for Windows install locations
@@ -307,7 +308,15 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
                  persistent: bool = False):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+
+        # Disable persistent shell if falling back to cmd.exe on Windows
+        # (Persistent shell IPC protocol is currently Bash-only)
         self.persistent = persistent
+        if self.persistent and _IS_WINDOWS and _find_bash().endswith("cmd.exe"):
+            import logging
+            logging.getLogger(__name__).warning("Persistent shell disabled (not supported for cmd.exe)")
+            self.persistent = False
+
         if self.persistent:
             self._init_persistent_shell()
 

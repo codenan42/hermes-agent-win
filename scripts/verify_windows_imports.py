@@ -56,10 +56,10 @@ def verify_imports():
 
     print("-" * 50)
     if not failed:
-        print("✅ All core modules imported successfully!")
+        print("[OK] All core modules imported successfully!")
         return True
     else:
-        print(f"❌ {len(failed)} modules failed to import.")
+        print(f"[FAIL] {len(failed)} modules failed to import.")
         for mod, err in failed:
             print(f"  - {mod}: {err}")
         return False

@@ -1079,17 +1079,24 @@ class NativeFileOperations(FileOperations):
 
     def _search_files(self, pattern: str, root: str, limit: int, offset: int) -> SearchResult:
         matches = []
-        norm_pattern = pattern.replace('\\', '/')
-        if '/' not in norm_pattern:
-            glob_pattern = f"**/{pattern}"
-        else:
-            glob_pattern = pattern
+        # Support both simple names and glob patterns
+        glob_pattern = pattern if '*' in pattern or '?' in pattern else f"**/*{pattern}*"
 
-        for p in Path(root).rglob('*'):
-            if p.is_file():
-                rel = os.path.relpath(p, root)
-                if fnmatch.fnmatch(rel.replace('\\', '/'), norm_pattern):
+        try:
+            # Use rglob for efficient walking
+            for p in Path(root).rglob(glob_pattern if '**' in glob_pattern else f"**/{glob_pattern}"):
+                if p.is_file():
+                    try:
+                        matches.append((p.stat().st_mtime, str(p)))
+                    except OSError:
+                        continue
+                if len(matches) > limit + offset + 1000: break
+        except Exception:
+            # Fallback for complex patterns
+            for p in Path(root).rglob('*'):
+                if p.is_file() and fnmatch.fnmatch(p.name, pattern):
                     matches.append((p.stat().st_mtime, str(p)))
+                if len(matches) > limit + offset + 1000: break
 
         matches.sort(key=lambda x: x[0], reverse=True)
         files = [os.path.relpath(m[1], self.cwd) for m in matches]
@@ -1102,18 +1109,25 @@ class NativeFileOperations(FileOperations):
         except Exception as e:
             return SearchResult(error=f"Invalid regex: {e}")
 
-        search_iter = Path(root).rglob(file_glob if file_glob else '*')
+        # Optimization: use rglob with pattern if possible
+        glob_pattern = file_glob if file_glob else '*'
+        search_iter = Path(root).rglob(glob_pattern)
 
         for p in search_iter:
             if not p.is_file():
                 continue
-            if file_glob and not fnmatch.fnmatch(p.name, file_glob):
-                continue
 
             try:
-                if p.stat().st_size > 10 * 1024 * 1024: continue
+                # Skip binary extensions and large files (>5MB)
+                if p.suffix.lower() in BINARY_EXTENSIONS: continue
+                if p.stat().st_size > 5 * 1024 * 1024: continue
 
                 with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                    # Content check for binary files (sample first 8KB)
+                    sample = f.read(8192)
+                    if '\0' in sample: continue
+                    f.seek(0)
+
                     for i, line in enumerate(f):
                         if regex.search(line):
                             rel_path = os.path.relpath(p, self.cwd)

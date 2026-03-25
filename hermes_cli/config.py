@@ -1,9 +1,9 @@
 """
 Configuration management for Hermes Agent.
 
-Config files are stored in a platform-appropriate home directory:
-- Linux/macOS: ~/.hermes/
-- Windows: %LOCALAPPDATA%/Hermes/
+Config files are stored in ~/.hermes/ for easy access:
+- ~/.hermes/config.yaml  - All settings (model, toolsets, terminal, etc.)
+- ~/.hermes/.env         - API keys and secrets
 
 This module provides:
 - hermes config          - Show current configuration
