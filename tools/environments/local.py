@@ -172,8 +172,9 @@ def _find_bash() -> str:
         return custom
 
     # shutil.which finds bash.exe if Git\bin is on PATH
+    # Skip WSL shim in system32 (it's not functional bash)
     found = shutil.which("bash")
-    if found:
+    if found and "system32" not in found.lower():
         return found
 
     # Check common Git for Windows install locations
