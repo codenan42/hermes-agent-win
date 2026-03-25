@@ -40,6 +40,7 @@ import subprocess
 import threading
 import time
 import uuid
+import tempfile
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
@@ -157,8 +158,14 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+
+                if user_shell.endswith("cmd.exe"):
+                    pty_args = [user_shell, "/C", command]
+                else:
+                    pty_args = [user_shell, "-lic", command]
+
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", command],
+                    pty_args,
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -198,8 +205,14 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+
+        if user_shell.endswith("cmd.exe"):
+            popen_args = [user_shell, "/C", command]
+        else:
+            popen_args = [user_shell, "-lic", command]
+
         proc = subprocess.Popen(
-            [user_shell, "-lic", command],
+            popen_args,
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -209,6 +222,7 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0,
         )
 
         session.process = proc
@@ -261,9 +275,12 @@ class ProcessRegistry:
             env_ref=env,
         )
 
-        # Run the command in the sandbox with output capture
-        log_path = f"/tmp/hermes_bg_{session.id}.log"
-        pid_path = f"/tmp/hermes_bg_{session.id}.pid"
+        # Run the command in the sandbox with output capture.
+        # NOTE: Sandbox environments (Docker, SSH, etc.) are POSIX-compliant,
+        # so we use /tmp for logs even if the host machine is Windows.
+        sandbox_tmp = "/tmp"
+        log_path = f"{sandbox_tmp}/hermes_bg_{session.id}.log"
+        pid_path = f"{sandbox_tmp}/hermes_bg_{session.id}.pid"
         quoted_command = shlex.quote(command)
         bg_command = (
             f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
@@ -485,8 +502,8 @@ class ProcessRegistry:
 
         default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
         max_timeout = default_timeout
+        requested_timeout = timeout_note = None
         requested_timeout = timeout
-        timeout_note = None
 
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
@@ -556,15 +573,23 @@ class ProcessRegistry:
                     session._pty.terminate(force=True)
                 except Exception:
                     if session.pid:
-                        os.kill(session.pid, signal.SIGTERM)
+                        try:
+                            os.kill(session.pid, signal.SIGTERM)
+                        except (ProcessLookupError, PermissionError):
+                            pass
             elif session.process:
                 # Local process -- kill the process group
                 try:
                     if _IS_WINDOWS:
-                        session.process.terminate()
+                        # Fallback for signal in non-Windows environments during lint
+                        ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", 1)
+                        os.kill(session.process.pid, ctrl_break)
+                        time.sleep(0.5)
+                        if session.process.poll() is None:
+                            session.process.terminate()
                     else:
                         os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
+                except (ProcessLookupError, PermissionError, AttributeError):
                     session.process.kill()
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox

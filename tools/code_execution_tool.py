@@ -179,9 +179,12 @@ def retry(fn, max_attempts=3, delay=2):
 def _connect():
     global _sock
     if _sock is None:
-        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        _sock.connect(os.environ["HERMES_RPC_SOCKET"])
-        _sock.settimeout(300)
+        if hasattr(socket, "AF_UNIX"):
+            _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            _sock.connect(os.environ["HERMES_RPC_SOCKET"])
+            _sock.settimeout(300)
+        else:
+            raise RuntimeError("AF_UNIX not supported on this platform")
     return _sock
 
 def _call(tool_name, args):
@@ -396,6 +399,7 @@ def execute_code(
     tool_call_counter = [0]  # mutable so the RPC thread can increment
     exec_start = time.monotonic()
 
+    server_sock = None
     try:
         # Write the auto-generated hermes_tools module
         # sandbox_tools is already the correct set (intersection with session
@@ -409,6 +413,9 @@ def execute_code(
             f.write(code)
 
         # --- Start UDS server ---
+        if not hasattr(socket, "AF_UNIX"):
+            raise RuntimeError("AF_UNIX not supported on this platform")
+
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(sock_path)
         server_sock.listen(1)
@@ -459,6 +466,7 @@ def execute_code(
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
@@ -572,7 +580,8 @@ def execute_code(
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
-        server_sock.close()  # break accept() so thread exits promptly
+        if server_sock:
+            server_sock.close()  # break accept() so thread exits promptly
         rpc_thread.join(timeout=3)
 
         # Build response
@@ -608,17 +617,19 @@ def execute_code(
 
     finally:
         # Cleanup temp dir and socket
-        try:
-            server_sock.close()
-        except Exception as e:
-            logger.debug("Server socket close error: %s", e)
+        if server_sock:
+            try:
+                server_sock.close()
+            except Exception as e:
+                logger.debug("Server socket close error: %s", e)
         try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception as e:
             logger.debug("Could not clean temp dir: %s", e, exc_info=True)
         try:
-            os.unlink(sock_path)
+            if os.path.exists(sock_path):
+                os.unlink(sock_path)
         except OSError as e:
             logger.debug("Could not remove socket file: %s", e, exc_info=True)
 
@@ -630,7 +641,7 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.terminate()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError) as e:
+    except (ProcessLookupError, PermissionError, AttributeError) as e:
         logger.debug("Could not kill process group: %s", e, exc_info=True)
         try:
             proc.kill()
@@ -647,7 +658,7 @@ def _kill_process_group(proc, escalate: bool = False):
                     proc.kill()
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError) as e:
+            except (ProcessLookupError, PermissionError, AttributeError) as e:
                 logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
                 try:
                     proc.kill()

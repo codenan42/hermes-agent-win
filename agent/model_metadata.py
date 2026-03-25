@@ -15,6 +15,7 @@ import requests
 import yaml
 
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "context_length_cache.yaml"
+    return get_hermes_home() / "context_length_cache.yaml"
 
 
 def _load_context_cache() -> Dict[str, int]:

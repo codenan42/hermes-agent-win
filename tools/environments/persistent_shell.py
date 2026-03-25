@@ -6,6 +6,8 @@ import subprocess
 import threading
 import time
 import uuid
+import os
+import tempfile
 from abc import abstractmethod
 
 from tools.interrupt import is_interrupted
@@ -44,7 +46,8 @@ class PersistentShellMixin:
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/hermes-persistent-{self._session_id}"
+        tmpdir = tempfile.gettempdir()
+        return os.path.join(tmpdir, f"hermes-persistent-{self._session_id}")
 
     # ------------------------------------------------------------------
     # Lifecycle

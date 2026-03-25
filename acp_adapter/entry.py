@@ -1,6 +1,6 @@
 """CLI entry point for the hermes-agent ACP adapter.
 
-Loads environment variables from ``~/.hermes/.env``, configures logging
+Loads environment variables from ``HERMES_HOME/.env``, configures logging
 to write to stderr (so stdout is reserved for ACP JSON-RPC transport),
 and starts the ACP agent server.
 
@@ -41,10 +41,11 @@ def _setup_logging() -> None:
 
 
 def _load_env() -> None:
-    """Load .env from HERMES_HOME (default ``~/.hermes``)."""
+    """Load .env from HERMES_HOME."""
     from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_cli.config import get_hermes_home
 
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_home = get_hermes_home()
     loaded = load_hermes_dotenv(hermes_home=hermes_home)
     if loaded:
         for env_file in loaded:
