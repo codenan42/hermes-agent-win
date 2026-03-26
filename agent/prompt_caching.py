@@ -12,29 +12,46 @@ import copy
 from typing import Any, Dict, List
 
 
-def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
-    """Add cache_control to a single message, handling all format variations."""
+def _apply_cache_marker(msg: dict, cache_marker: dict) -> dict:
+    """Add cache_control to a single message, returning a new dictionary.
+
+    Handles both string content and Anthropic multimodal content lists.
+    Uses selective shallow copying to avoid expensive deep copies while
+    preserving the original message objects.
+    """
     role = msg.get("role", "")
     content = msg.get("content")
 
+    # Create a shallow copy of the message dictionary
+    new_msg = msg.copy()
+
     if role == "tool":
-        msg["cache_control"] = cache_marker
-        return
+        new_msg["cache_control"] = cache_marker
+        return new_msg
 
     if content is None or content == "":
-        msg["cache_control"] = cache_marker
-        return
+        new_msg["cache_control"] = cache_marker
+        return new_msg
 
     if isinstance(content, str):
-        msg["content"] = [
+        # Convert string content to content-block list with cache_marker
+        new_msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]
-        return
+        return new_msg
 
     if isinstance(content, list) and content:
-        last = content[-1]
+        # Create a shallow copy of the content list
+        new_content = list(content)
+        # Shallow copy the last item so we can safely inject cache_control
+        last = new_content[-1]
         if isinstance(last, dict):
-            last["cache_control"] = cache_marker
+            new_last = last.copy()
+            new_last["cache_control"] = cache_marker
+            new_content[-1] = new_last
+        new_msg["content"] = new_content
+
+    return new_msg
 
 
 def apply_anthropic_cache_control(
@@ -46,11 +63,13 @@ def apply_anthropic_cache_control(
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        New list of messages with selective shallow copies for cached items.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
+
+    # Shallow copy the message list
+    messages = api_messages.copy()
 
     marker = {"type": "ephemeral"}
     if cache_ttl == "1h":
@@ -59,12 +78,12 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
+        messages[0] = _apply_cache_marker(messages[0], marker)
         breakpoints_used += 1
 
     remaining = 4 - breakpoints_used
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
     for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker)
+        messages[idx] = _apply_cache_marker(messages[idx], marker)
 
     return messages

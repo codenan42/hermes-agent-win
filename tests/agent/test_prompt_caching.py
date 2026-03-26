@@ -15,30 +15,34 @@ MARKER = {"type": "ephemeral"}
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker(self):
         msg = {"role": "tool", "content": "result"}
-        _apply_cache_marker(msg, MARKER)
-        assert msg["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert new_msg["cache_control"] == MARKER
+        assert "cache_control" not in msg
 
     def test_none_content_gets_top_level_marker(self):
         msg = {"role": "assistant", "content": None}
-        _apply_cache_marker(msg, MARKER)
-        assert msg["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert new_msg["cache_control"] == MARKER
+        assert "cache_control" not in msg
 
     def test_empty_string_content_gets_top_level_marker(self):
         """Empty text blocks cannot have cache_control (Anthropic rejects them)."""
         msg = {"role": "assistant", "content": ""}
-        _apply_cache_marker(msg, MARKER)
-        assert msg["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert new_msg["cache_control"] == MARKER
         # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
-        assert msg["content"] == ""
+        assert new_msg["content"] == ""
+        assert "cache_control" not in msg
 
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}
-        _apply_cache_marker(msg, MARKER)
-        assert isinstance(msg["content"], list)
-        assert len(msg["content"]) == 1
-        assert msg["content"][0]["type"] == "text"
-        assert msg["content"][0]["text"] == "Hello"
-        assert msg["content"][0]["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert isinstance(new_msg["content"], list)
+        assert len(new_msg["content"]) == 1
+        assert new_msg["content"][0]["type"] == "text"
+        assert new_msg["content"][0]["text"] == "Hello"
+        assert new_msg["content"][0]["cache_control"] == MARKER
+        assert isinstance(msg["content"], str)
 
     def test_list_content_last_item_gets_marker(self):
         msg = {
@@ -48,9 +52,10 @@ class TestApplyCacheMarker:
                 {"type": "text", "text": "Second"},
             ],
         }
-        _apply_cache_marker(msg, MARKER)
-        assert "cache_control" not in msg["content"][0]
-        assert msg["content"][1]["cache_control"] == MARKER
+        new_msg = _apply_cache_marker(msg, MARKER)
+        assert "cache_control" not in new_msg["content"][0]
+        assert new_msg["content"][1]["cache_control"] == MARKER
+        assert "cache_control" not in msg["content"][1]
 
     def test_empty_list_content_no_crash(self):
         msg = {"role": "user", "content": []}
@@ -63,13 +68,18 @@ class TestApplyAnthropicCacheControl:
         result = apply_anthropic_cache_control([])
         assert result == []
 
-    def test_returns_deep_copy(self):
-        msgs = [{"role": "user", "content": "Hello"}]
+    def test_returns_selective_copy(self):
+        msgs = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
         result = apply_anthropic_cache_control(msgs)
         assert result is not msgs
         assert result[0] is not msgs[0]
+        assert result[1] is not msgs[1]
         # Original should be unmodified
-        assert "cache_control" not in msgs[0].get("content", "")
+        assert isinstance(msgs[0]["content"], str)
+        assert isinstance(msgs[1]["content"], str)
 
     def test_system_message_gets_marker(self):
         msgs = [
