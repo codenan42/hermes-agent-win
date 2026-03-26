@@ -185,3 +185,43 @@ class TestApplyUpdate:
             '    result = 1\n'
             '    return result + 1'
         )
+
+class TestApplySecurity:
+    def test_delete_denied_path(self):
+        patch = "*** Begin Patch\n*** Delete File: /etc/shadow\n*** End Patch"
+        ops, _ = parse_v4a_patch(patch)
+
+        class FakeFileOps:
+            def _escape_shell_arg(self, arg): return f"'{arg}'"
+            def read_file(self, path): return SimpleNamespace(content="...", error=None)
+            def _exec(self, cmd): return SimpleNamespace(exit_code=0, stdout="")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "Delete denied" in result.error
+
+    def test_move_denied_source(self):
+        patch = "*** Begin Patch\n*** Move File: /etc/shadow -> /tmp/shadow\n*** End Patch"
+        ops, _ = parse_v4a_patch(patch)
+
+        class FakeFileOps:
+            def _escape_shell_arg(self, arg): return f"'{arg}'"
+            def _exec(self, cmd): return SimpleNamespace(exit_code=0, stdout="")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "Move denied" in result.error
+        assert "source" in result.error
+
+    def test_move_denied_destination(self):
+        patch = "*** Begin Patch\n*** Move File: /tmp/evil -> /etc/shadow\n*** End Patch"
+        ops, _ = parse_v4a_patch(patch)
+
+        class FakeFileOps:
+            def _escape_shell_arg(self, arg): return f"'{arg}'"
+            def _exec(self, cmd): return SimpleNamespace(exit_code=0, stdout="")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "Move denied" in result.error
+        assert "destination" in result.error
