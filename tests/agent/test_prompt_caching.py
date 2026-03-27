@@ -15,25 +15,25 @@ MARKER = {"type": "ephemeral"}
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker(self):
         msg = {"role": "tool", "content": "result"}
-        _apply_cache_marker(msg, MARKER)
+        msg = _apply_cache_marker(msg, MARKER)
         assert msg["cache_control"] == MARKER
 
     def test_none_content_gets_top_level_marker(self):
         msg = {"role": "assistant", "content": None}
-        _apply_cache_marker(msg, MARKER)
+        msg = _apply_cache_marker(msg, MARKER)
         assert msg["cache_control"] == MARKER
 
     def test_empty_string_content_gets_top_level_marker(self):
         """Empty text blocks cannot have cache_control (Anthropic rejects them)."""
         msg = {"role": "assistant", "content": ""}
-        _apply_cache_marker(msg, MARKER)
+        msg = _apply_cache_marker(msg, MARKER)
         assert msg["cache_control"] == MARKER
         # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
         assert msg["content"] == ""
 
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}
-        _apply_cache_marker(msg, MARKER)
+        msg = _apply_cache_marker(msg, MARKER)
         assert isinstance(msg["content"], list)
         assert len(msg["content"]) == 1
         assert msg["content"][0]["type"] == "text"
@@ -48,7 +48,7 @@ class TestApplyCacheMarker:
                 {"type": "text", "text": "Second"},
             ],
         }
-        _apply_cache_marker(msg, MARKER)
+        msg = _apply_cache_marker(msg, MARKER)
         assert "cache_control" not in msg["content"][0]
         assert msg["content"][1]["cache_control"] == MARKER
 
