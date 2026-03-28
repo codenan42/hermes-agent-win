@@ -3353,14 +3353,19 @@ class AIAgent:
         ):
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
-            if not isinstance(msg, dict):
-                continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
+        # Optimized: only copy and transform messages that actually contain images.
+        # This is much faster than copy.deepcopy(api_messages) for large histories.
+        transformed = []
+        for msg in api_messages:
+            if isinstance(msg, dict) and self._content_has_image_parts(msg.get("content")):
+                new_msg = msg.copy()
+                new_msg["content"] = self._preprocess_anthropic_content(
+                    msg.get("content"),
+                    str(msg.get("role", "user") or "user"),
+                )
+                transformed.append(new_msg)
+            else:
+                transformed.append(msg)
         return transformed
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
@@ -3438,20 +3443,39 @@ class AIAgent:
                     break
 
         if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
+            # Optimized: only copy and modify messages that actually need sanitization.
+            # This is much faster than copy.deepcopy(api_messages) for large histories.
+            sanitized_messages = []
+            for msg in api_messages:
                 if not isinstance(msg, dict):
+                    sanitized_messages.append(msg)
                     continue
 
-                # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
+                msg_needs_copy = (
+                    "codex_reasoning_items" in msg or
+                    isinstance(msg.get("tool_calls"), list)
+                )
 
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
+                if msg_needs_copy:
+                    new_msg = msg.copy()
+                    # Codex-only replay state must not leak into strict chat-completions APIs.
+                    new_msg.pop("codex_reasoning_items", None)
+
+                    tool_calls = new_msg.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        new_tool_calls = []
+                        for tool_call in tool_calls:
+                            if isinstance(tool_call, dict) and ("call_id" in tool_call or "response_item_id" in tool_call):
+                                new_tc = tool_call.copy()
+                                new_tc.pop("call_id", None)
+                                new_tc.pop("response_item_id", None)
+                                new_tool_calls.append(new_tc)
+                            else:
+                                new_tool_calls.append(tool_call)
+                        new_msg["tool_calls"] = new_tool_calls
+                    sanitized_messages.append(new_msg)
+                else:
+                    sanitized_messages.append(msg)
 
         provider_preferences = {}
         if self.providers_allowed:
