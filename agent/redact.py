@@ -40,10 +40,11 @@ _PREFIX_PATTERNS = [
     r"GOCSPX-[A-Za-z0-9_-]{20,}",       # Google OAuth Client Secret
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+# Handles unquoted values (non-whitespace) and quoted values (can contain spaces).
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION|CSRF|XSRF)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(?:(['\"])(.*?)\2|(\S+))",
     re.IGNORECASE,
 )
 
@@ -111,7 +112,13 @@ def redact_sensitive_text(text: str) -> str:
 
     # ENV assignments: OPENAI_API_KEY=sk-abc...
     def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
+        name = m.group(1)
+        if m.group(2):  # Quoted case: group(2) is quote char, group(3) is value
+            quote = m.group(2)
+            value = m.group(3)
+        else:  # Unquoted case: group(4) is value
+            quote = ""
+            value = m.group(4)
         return f"{name}={quote}{_mask_token(value)}{quote}"
     text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
