@@ -100,6 +100,10 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Track initialized database paths to skip redundant schema checks in the same process.
+    # Maps absolute path string to SCHEMA_VERSION that was initialized.
+    _initialized_paths: Dict[str, int] = {}
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +121,10 @@ class SessionDB:
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
+        abs_path = str(self.db_path.absolute())
+        if SessionDB._initialized_paths.get(abs_path) == SCHEMA_VERSION:
+            return
+
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
@@ -170,6 +178,7 @@ class SessionDB:
             cursor.executescript(FTS_SQL)
 
         self._conn.commit()
+        SessionDB._initialized_paths[abs_path] = SCHEMA_VERSION
 
     def close(self):
         """Close the database connection."""
