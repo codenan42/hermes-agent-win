@@ -185,3 +185,51 @@ class TestApplyUpdate:
             '    result = 1\n'
             '    return result + 1'
         )
+
+
+class TestV4ASecurity:
+    def test_apply_delete_denied_path(self):
+        patch = """\
+*** Begin Patch
+*** Delete File: ~/.ssh/id_rsa
+*** End Patch"""
+        operations, err = parse_v4a_patch(patch)
+
+        class MockFileOps:
+            def _exec(self, cmd): return None
+            def _escape_shell_arg(self, arg): return arg
+
+        result = apply_v4a_operations(operations, MockFileOps())
+        assert result.success is False
+        assert "Delete denied" in result.error
+        assert ".ssh/id_rsa" in result.error
+
+    def test_apply_move_denied_source(self):
+        patch = """\
+*** Begin Patch
+*** Move File: ~/.ssh/id_rsa -> /tmp/leaked_key
+*** End Patch"""
+        operations, err = parse_v4a_patch(patch)
+
+        class MockFileOps:
+            def _exec(self, cmd): return None
+            def _escape_shell_arg(self, arg): return arg
+
+        result = apply_v4a_operations(operations, MockFileOps())
+        assert result.success is False
+        assert "Move source denied" in result.error
+
+    def test_apply_move_denied_destination(self):
+        patch = """\
+*** Begin Patch
+*** Move File: /tmp/normal -> ~/.ssh/authorized_keys
+*** End Patch"""
+        operations, err = parse_v4a_patch(patch)
+
+        class MockFileOps:
+            def _exec(self, cmd): return None
+            def _escape_shell_arg(self, arg): return arg
+
+        result = apply_v4a_operations(operations, MockFileOps())
+        assert result.success is False
+        assert "Move destination denied" in result.error
