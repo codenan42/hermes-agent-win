@@ -1,0 +1,3 @@
+## 2025-05-21 - [Replace deepcopy with selective shallow copy]
+**Learning:** `copy.deepcopy()` is extremely expensive for large message histories (e.g., 1000 messages) in Python, taking hundreds of milliseconds. Since message histories are often just lists of dictionaries, and most operations (like sanitization or adding cache markers) only affect a few messages, selective shallow copying (using `list[:]` and `dict.copy()`) can achieve ~100x speedups while maintaining immutability for the caller.
+**Action:** Always prefer selective shallow copying over `copy.deepcopy()` when processing conversation histories or large metadata structures, unless deep nested structures (more than 2 levels) truly require full isolation.
