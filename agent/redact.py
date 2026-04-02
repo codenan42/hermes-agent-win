@@ -43,7 +43,7 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION|CSRF|XSRF)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(?:(['\"])(.*?)\2|(\S+))",
     re.IGNORECASE,
 )
 
@@ -111,7 +111,9 @@ def redact_sensitive_text(text: str) -> str:
 
     # ENV assignments: OPENAI_API_KEY=sk-abc...
     def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
+        name = m.group(1)
+        quote = m.group(2) or ""
+        value = m.group(3) if m.group(2) else m.group(4)
         return f"{name}={quote}{_mask_token(value)}{quote}"
     text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
