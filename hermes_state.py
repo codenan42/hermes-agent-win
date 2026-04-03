@@ -100,6 +100,10 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Cache of already-initialized database paths to skip redundant schema checks.
+    # Map of {db_path_str: schema_version}
+    _initialized_paths: Dict[str, int] = {}
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +117,19 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
+        # Optimization: skip redundant schema checks if this DB was already
+        # initialized in this process at the current version.
+        # We also check if the file actually exists to handle cases where it
+        # might have been deleted externally during the process's lifetime.
+        db_key = str(self.db_path.resolve())
+        if (
+            self._initialized_paths.get(db_key) == SCHEMA_VERSION
+            and self.db_path.exists()
+        ):
+            return
+
         self._init_schema()
+        self._initialized_paths[db_key] = SCHEMA_VERSION
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
