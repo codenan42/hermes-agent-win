@@ -1,0 +1,3 @@
+## 2025-05-15 - [SQLite SessionDB Initialization Cache]
+**Learning:** Redundant SQLite schema checks (`PRAGMA`, `CREATE TABLE IF NOT EXISTS`) and migration logic can add significant overhead (~0.15ms per instantiation) in applications that frequently create database connection wrappers. While individual checks are fast, the cumulative cost of multiple SQL executions on every `__init__` is measurable.
+**Action:** Implement class-level caching for validated database file paths to skip schema initialization on subsequent instantiations within the same process. Use `Path.resolve()` to ensure consistent path matching.
