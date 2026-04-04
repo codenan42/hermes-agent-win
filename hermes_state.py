@@ -100,6 +100,10 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Cache for validated database files to skip redundant schema checks
+    # and migrations on subsequent instantiations.
+    _initialized_paths = set()
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +117,12 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+        # Skip expensive schema validation if we've already done it for this path
+        # in the current process.
+        resolved_path = str(self.db_path.resolve())
+        if resolved_path not in SessionDB._initialized_paths:
+            self._init_schema()
+            SessionDB._initialized_paths.add(resolved_path)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
