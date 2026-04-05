@@ -75,13 +75,17 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
+def _is_path_denied(path: str) -> bool:
+    """Return True if path is on the restricted list (read/write denied)."""
     resolved = os.path.realpath(os.path.expanduser(path))
     if resolved in WRITE_DENIED_PATHS:
         return True
     for prefix in WRITE_DENIED_PREFIXES:
+        # Check if it's inside the denied directory (prefix includes trailing slash)
         if resolved.startswith(prefix):
+            return True
+        # Check if it IS the denied directory itself (remove trailing slash)
+        if resolved == prefix.rstrip(os.sep):
             return True
     return False
 
@@ -447,7 +451,11 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block reads to sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected system/credential file.")
+
         # Clamp limit
         limit = min(limit, MAX_LINES)
         
@@ -637,7 +645,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
@@ -694,7 +702,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
@@ -824,7 +832,14 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block searches to sensitive paths
+        if _is_path_denied(path):
+            return SearchResult(
+                error=f"Search denied: '{path}' is a protected system/credential directory or file.",
+                total_count=0
+            )
+
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
