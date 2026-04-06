@@ -3353,14 +3353,20 @@ class AIAgent:
         ):
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        # Optimized: shallow copy list and only copy messages with images
+        transformed = api_messages[:]
+        for i, msg in enumerate(transformed):
             if not isinstance(msg, dict):
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
+            content = msg.get("content")
+            if self._content_has_image_parts(content):
+                # Copy the message before mutating its content
+                msg = msg.copy()
+                msg["content"] = self._preprocess_anthropic_content(
+                    content,
+                    str(msg.get("role", "user") or "user"),
+                )
+                transformed[i] = msg
         return transformed
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
@@ -3438,20 +3444,40 @@ class AIAgent:
                     break
 
         if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
+            # Optimized: shallow copy the list and only copy messages that need sanitization
+            sanitized_messages = api_messages[:]
+            for idx, msg in enumerate(sanitized_messages):
                 if not isinstance(msg, dict):
                     continue
+
+                # Check if this message needs sanitization
+                msg_needs_sanit = (
+                    "codex_reasoning_items" in msg
+                    or isinstance(msg.get("tool_calls"), list)
+                )
+
+                if not msg_needs_sanit:
+                    continue
+
+                # Create a shallow copy of the message before mutating
+                msg = msg.copy()
 
                 # Codex-only replay state must not leak into strict chat-completions APIs.
                 msg.pop("codex_reasoning_items", None)
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
+                    # Shallow copy the tool_calls list and dictionaries to avoid side effects
+                    msg["tool_calls"] = [
+                        tc.copy() if isinstance(tc, dict) else tc
+                        for tc in tool_calls
+                    ]
+                    for tool_call in msg["tool_calls"]:
                         if isinstance(tool_call, dict):
                             tool_call.pop("call_id", None)
                             tool_call.pop("response_item_id", None)
+
+                sanitized_messages[idx] = msg
 
         provider_preferences = {}
         if self.providers_allowed:
