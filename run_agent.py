@@ -3347,20 +3347,32 @@ class AIAgent:
         return "[A multimodal message was converted to text for Anthropic compatibility.]"
 
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
-        if not any(
+        # Optimized: targeted message transformation instead of full deepcopy.
+        # This function converts multimodal (image) content to text-only fallbacks
+        # for Anthropic providers that don't support native vision yet.
+        has_images = any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
             for msg in api_messages
-        ):
+        )
+        if not has_images:
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = api_messages[:]
+        for idx, msg in enumerate(transformed):
             if not isinstance(msg, dict):
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
+            # Note: always call preprocess if images are present in history,
+            # but _preprocess_anthropic_content itself returns immediately
+            # if the specific message content has no image parts.
+            old_content = msg.get("content")
+            new_content = self._preprocess_anthropic_content(
+                old_content,
                 str(msg.get("role", "user") or "user"),
             )
+            if new_content is not old_content:
+                msg_copy = msg.copy()
+                msg_copy["content"] = new_content
+                transformed[idx] = msg_copy
         return transformed
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
@@ -3418,40 +3430,50 @@ class AIAgent:
             return kwargs
 
         sanitized_messages = api_messages
-        needs_sanitization = False
-        for msg in api_messages:
+        # Indices of messages that need Codex fields stripped
+        indices_to_sanitize = []
+        for idx, msg in enumerate(api_messages):
             if not isinstance(msg, dict):
                 continue
+
+            msg_needs_sanitization = False
             if "codex_reasoning_items" in msg:
-                needs_sanitization = True
-                break
+                msg_needs_sanitization = True
+            else:
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if not isinstance(tool_call, dict):
+                            continue
+                        if "call_id" in tool_call or "response_item_id" in tool_call:
+                            msg_needs_sanitization = True
+                            break
 
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tool_call in tool_calls:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    if "call_id" in tool_call or "response_item_id" in tool_call:
-                        needs_sanitization = True
-                        break
-                if needs_sanitization:
-                    break
+            if msg_needs_sanitization:
+                indices_to_sanitize.append(idx)
 
-        if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
-                if not isinstance(msg, dict):
-                    continue
+        if indices_to_sanitize:
+            # Optimized: shallow copy of list, only copy messages that need sanitization
+            sanitized_messages = api_messages[:]
+            for idx in indices_to_sanitize:
+                msg = api_messages[idx].copy()
 
                 # Codex-only replay state must not leak into strict chat-completions APIs.
                 msg.pop("codex_reasoning_items", None)
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
+                    # Shallow copy tool_calls list and each tool_call dict that needs modification
+                    new_tool_calls = tool_calls[:]
+                    for tc_idx, tool_call in enumerate(new_tool_calls):
+                        if isinstance(tool_call, dict) and ("call_id" in tool_call or "response_item_id" in tool_call):
+                            tc_copy = tool_call.copy()
+                            tc_copy.pop("call_id", None)
+                            tc_copy.pop("response_item_id", None)
+                            new_tool_calls[tc_idx] = tc_copy
+                    msg["tool_calls"] = new_tool_calls
+
+                sanitized_messages[idx] = msg
 
         provider_preferences = {}
         if self.providers_allowed:

@@ -13,7 +13,10 @@ from typing import Any, Dict, List
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
-    """Add cache_control to a single message, handling all format variations."""
+    """Add cache_control to a single message, handling all format variations.
+
+    Mutates msg in-place. Callers must ensure msg is a copy.
+    """
     role = msg.get("role", "")
     content = msg.get("content")
 
@@ -32,9 +35,15 @@ def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
         return
 
     if isinstance(content, list) and content:
-        last = content[-1]
+        # Shallow copy of the content list so we can modify the last element
+        # without affecting the original list.
+        content_copy = content[:]
+        msg["content"] = content_copy
+        last = content_copy[-1]
         if isinstance(last, dict):
-            last["cache_control"] = cache_marker
+            # Shallow copy of the last part dict to add cache_control
+            content_copy[-1] = last.copy()
+            content_copy[-1]["cache_control"] = cache_marker
 
 
 def apply_anthropic_cache_control(
@@ -46,25 +55,35 @@ def apply_anthropic_cache_control(
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        New list of messages (shallow copy) with targeted deep copies for modified messages.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return []
+
+    # Shallow copy of the list
+    messages = api_messages[:]
 
     marker = {"type": "ephemeral"}
     if cache_ttl == "1h":
         marker["ttl"] = "1h"
 
-    breakpoints_used = 0
-
+    # Identify indices that need markers
+    indices_to_modify = []
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
-        breakpoints_used += 1
+        indices_to_modify.append(0)
 
-    remaining = 4 - breakpoints_used
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker)
+    remaining = 4 - len(indices_to_modify)
+    if remaining > 0:
+        for idx in non_sys[-remaining:]:
+            if idx not in indices_to_modify:
+                indices_to_modify.append(idx)
+
+    # Only copy and modify the messages that actually need a breakpoint.
+    # The rest remain as references to the original messages.
+    for idx in indices_to_modify:
+        msg = messages[idx].copy()
+        _apply_cache_marker(msg, marker)
+        messages[idx] = msg
 
     return messages
