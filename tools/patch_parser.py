@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Any
 from enum import Enum
 
+from tools.file_operations import _is_path_denied
+
 
 class OperationType(Enum):
     ADD = "add"
@@ -317,6 +319,10 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
+    # Block deletes from sensitive paths
+    if _is_path_denied(op.file_path):
+        return False, f"Delete denied: '{op.file_path}' is a protected system/credential file."
+
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
     
@@ -336,6 +342,12 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    # Block moves from/to sensitive paths
+    if _is_path_denied(op.file_path):
+        return False, f"Move denied: source '{op.file_path}' is a protected system/credential file."
+    if _is_path_denied(op.new_path):
+        return False, f"Move denied: destination '{op.new_path}' is a protected system/credential file."
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
