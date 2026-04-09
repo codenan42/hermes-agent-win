@@ -75,13 +75,14 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
+def _is_path_denied(path: str) -> bool:
+    """Return True if path is on the security deny list (protected system/credential file)."""
     resolved = os.path.realpath(os.path.expanduser(path))
     if resolved in WRITE_DENIED_PATHS:
         return True
     for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
+        # Match both the directory itself (without trailing slash) and its contents
+        if resolved == prefix.rstrip(os.sep) or resolved.startswith(prefix):
             return True
     return False
 
@@ -447,6 +448,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block reads to sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Access denied: '{path}' is a protected system/credential file.")
         
         # Clamp limit
         limit = min(limit, MAX_LINES)
@@ -637,8 +642,8 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        if _is_path_denied(path):
+            return WriteResult(error=f"Access denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
         parent = os.path.dirname(path)
@@ -694,8 +699,8 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        if _is_path_denied(path):
+            return PatchResult(error=f"Access denied: '{path}' is a protected system/credential file.")
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
@@ -824,6 +829,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block searches in sensitive paths
+        if _is_path_denied(path):
+            return SearchResult(error=f"Access denied: '{path}' is a protected system/credential file.", total_count=0)
         
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
