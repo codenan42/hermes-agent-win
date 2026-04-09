@@ -44,27 +44,35 @@ def apply_anthropic_cache_control(
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
+    Optimized to use shallow copies for the message list and only deep-copy messages
+    that are actually modified for cache control.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        New list of messages with cache_control breakpoints injected.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return []
+
+    # Create a shallow copy of the list so we can replace modified messages
+    messages = list(api_messages)
 
     marker = {"type": "ephemeral"}
     if cache_ttl == "1h":
         marker["ttl"] = "1h"
 
-    breakpoints_used = 0
-
+    # Identify indices that need cache markers
+    to_modify = []
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
-        breakpoints_used += 1
+        to_modify.append(0)
 
-    remaining = 4 - breakpoints_used
+    remaining = 4 - len(to_modify)
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
+    to_modify.extend(non_sys[-remaining:])
+
+    for idx in to_modify:
+        # Deep copy ONLY the messages we are about to mutate to avoid side effects
+        # on the original message history.
+        messages[idx] = copy.deepcopy(api_messages[idx])
         _apply_cache_marker(messages[idx], marker)
 
     return messages
