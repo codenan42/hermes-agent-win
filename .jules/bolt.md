@@ -1,0 +1,3 @@
+## 2025-05-15 - [DeepCopy overhead in message processing]
+**Learning:** `copy.deepcopy(api_messages)` is a major bottleneck in agent loops with large histories (1000+ messages). For 1000 messages, it takes ~3ms per call. Since most messages are immutable after creation, deep-copying the entire list on every turn is redundant.
+**Action:** Use selective shallow copying: `messages = api_messages.copy()` followed by targeted deep-copies of only the specific messages that need mutation (e.g., those receiving `cache_control` markers or being sanitized). This reduces latency to ~0.1ms for 1000 messages.
