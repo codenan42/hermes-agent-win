@@ -13,7 +13,11 @@ from typing import Any, Dict, List
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
-    """Add cache_control to a single message, handling all format variations."""
+    """Add cache_control to a single message, handling all format variations.
+
+    Mutates the msg dict in-place, but copies nested content lists to avoid
+    side effects on shared history.
+    """
     role = msg.get("role", "")
     content = msg.get("content")
 
@@ -32,9 +36,14 @@ def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
         return
 
     if isinstance(content, list) and content:
-        last = content[-1]
+        # Shallow copy the content list to avoid mutating original history
+        new_content = list(content)
+        last = new_content[-1]
         if isinstance(last, dict):
-            last["cache_control"] = cache_marker
+            # Shallow copy the last content block to avoid mutating original history
+            new_content[-1] = last.copy()
+            new_content[-1]["cache_control"] = cache_marker
+        msg["content"] = new_content
 
 
 def apply_anthropic_cache_control(
@@ -45,26 +54,36 @@ def apply_anthropic_cache_control(
 
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
 
+    Optimization: uses selective shallow copying instead of full deepcopy.
+    Only the targeted messages and their content blocks are copied.
+
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        Optimized list of messages with cache_control breakpoints injected.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
+
+    # Shallow copy the messages list
+    messages = list(api_messages)
 
     marker = {"type": "ephemeral"}
     if cache_ttl == "1h":
         marker["ttl"] = "1h"
 
-    breakpoints_used = 0
-
+    # Identify target messages for cache_control injection
+    target_indices = []
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
-        breakpoints_used += 1
+        target_indices.append(0)
 
-    remaining = 4 - breakpoints_used
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker)
+    remaining_slots = 4 - len(target_indices)
+    if remaining_slots > 0:
+        target_indices.extend(non_sys[-remaining_slots:])
+
+    # Inject markers into shallow copies of target messages
+    for idx in target_indices:
+        msg_copy = messages[idx].copy()
+        _apply_cache_marker(msg_copy, marker)
+        messages[idx] = msg_copy
 
     return messages
