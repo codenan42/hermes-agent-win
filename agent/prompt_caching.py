@@ -46,25 +46,34 @@ def apply_anthropic_cache_control(
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        New list of messages with cache_control breakpoints injected into copies
+        of the affected messages.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
+
+    # Shallow copy the list to avoid mutating the caller's list
+    messages = api_messages.copy()
 
     marker = {"type": "ephemeral"}
     if cache_ttl == "1h":
         marker["ttl"] = "1h"
 
-    breakpoints_used = 0
-
+    # Identify indices to modify: system prompt + up to 3 most recent messages
+    indices_to_modify = []
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
-        breakpoints_used += 1
+        indices_to_modify.append(0)
 
-    remaining = 4 - breakpoints_used
+    # Remaining breakpoints (up to 4 total) for the most recent non-system messages
+    remaining = 4 - len(indices_to_modify)
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
+    indices_to_modify.extend(non_sys[-remaining:])
+
+    # Apply markers ONLY to deep copies of the affected messages.
+    # We use deepcopy for these specific messages because _apply_cache_marker
+    # may mutate nested structures like the 'content' list.
+    for idx in indices_to_modify:
+        messages[idx] = copy.deepcopy(api_messages[idx])
         _apply_cache_marker(messages[idx], marker)
 
     return messages
