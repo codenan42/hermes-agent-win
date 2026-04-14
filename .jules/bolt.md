@@ -1,0 +1,3 @@
+## 2025-05-14 - [Consolidate redundant skill file parsing]
+**Learning:** In `agent/prompt_builder.py`, both `_parse_skill_file` and `_read_skill_conditions` were reading and parsing the first 2000 characters of each `SKILL.md` file. Consolidating these into a single-pass `_load_skill_data` function reduced the execution time of `build_skills_system_prompt` from ~802ms to ~148ms for ~90 skills, a ~5.4x speedup.
+**Action:** Always look for multiple functions that scan or parse the same files or data structures in a loop, and consolidate them into a single-pass operation to reduce I/O and CPU overhead.
