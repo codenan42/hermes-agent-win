@@ -8,8 +8,7 @@ import sys
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
-    _parse_skill_file,
-    _read_skill_conditions,
+    _load_skill_data,
     _skill_should_show,
     build_skills_system_prompt,
     build_context_files_prompt,
@@ -130,42 +129,45 @@ class TestTruncateContent:
 
 
 # =========================================================================
-# _parse_skill_file — single-pass skill file reading
+# _load_skill_data — single-pass skill file reading
 # =========================================================================
 
 
-class TestParseSkillFile:
+class TestLoadSkillData:
     def test_reads_frontmatter_description(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
             "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here"
         )
-        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+        is_compat, frontmatter, desc, conditions = _load_skill_data(skill_file)
         assert is_compat is True
         assert frontmatter.get("name") == "test-skill"
         assert desc == "A useful test skill"
+        assert conditions["fallback_for_toolsets"] == []
 
     def test_missing_description_returns_empty(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text("No frontmatter here")
-        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+        is_compat, frontmatter, desc, conditions = _load_skill_data(skill_file)
         assert desc == ""
+        assert conditions["fallback_for_toolsets"] == []
 
     def test_long_description_truncated(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         long_desc = "A" * 100
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
-        _, _, desc = _parse_skill_file(skill_file)
+        _, _, desc, _ = _load_skill_data(skill_file)
         assert len(desc) <= 60
         assert desc.endswith("...")
 
     def test_nonexistent_file_returns_defaults(self, tmp_path):
-        is_compat, frontmatter, desc = _parse_skill_file(tmp_path / "missing.md")
+        is_compat, frontmatter, desc, conditions = _load_skill_data(tmp_path / "missing.md")
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
+        assert conditions == {}
 
-    def test_logs_parse_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
+    def test_logs_load_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text("---\nname: broken\n---\n")
 
@@ -174,12 +176,13 @@ class TestParseSkillFile:
 
         monkeypatch.setattr(type(skill_file), "read_text", boom)
         with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+            is_compat, frontmatter, desc, conditions = _load_skill_data(skill_file)
 
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
-        assert "Failed to parse skill file" in caplog.text
+        assert conditions == {}
+        assert "Failed to load skill data from" in caplog.text
         assert str(skill_file) in caplog.text
 
     def test_incompatible_platform_returns_false(self, tmp_path):
@@ -191,7 +194,7 @@ class TestParseSkillFile:
 
         with patch("tools.skills_tool.sys") as mock_sys:
             mock_sys.platform = "linux"
-            is_compat, _, _ = _parse_skill_file(skill_file)
+            is_compat, _, _, _ = _load_skill_data(skill_file)
         assert is_compat is False
 
     def test_returns_frontmatter_with_prerequisites(self, tmp_path, monkeypatch):
@@ -201,7 +204,7 @@ class TestParseSkillFile:
             "---\nname: gated\ndescription: Gated skill\n"
             "prerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\n---\n"
         )
-        _, frontmatter, _ = _parse_skill_file(skill_file)
+        _, frontmatter, _, _ = _load_skill_data(skill_file)
         assert frontmatter["prerequisites"]["env_vars"] == ["NONEXISTENT_KEY_ABC"]
 
 
@@ -463,11 +466,11 @@ class TestPromptBuilderConstants:
 # Conditional skill activation
 # =========================================================================
 
-class TestReadSkillConditions:
+class TestSkillConditions:
     def test_no_conditions_returns_empty_lists(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text("---\nname: test\ndescription: A skill\n---\n")
-        conditions = _read_skill_conditions(skill_file)
+        _, _, _, conditions = _load_skill_data(skill_file)
         assert conditions["fallback_for_toolsets"] == []
         assert conditions["requires_toolsets"] == []
         assert conditions["fallback_for_tools"] == []
@@ -478,7 +481,7 @@ class TestReadSkillConditions:
         skill_file.write_text(
             "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
         )
-        conditions = _read_skill_conditions(skill_file)
+        _, _, _, conditions = _load_skill_data(skill_file)
         assert conditions["fallback_for_toolsets"] == ["web"]
 
     def test_reads_requires_toolsets(self, tmp_path):
@@ -486,7 +489,7 @@ class TestReadSkillConditions:
         skill_file.write_text(
             "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
         )
-        conditions = _read_skill_conditions(skill_file)
+        _, _, _, conditions = _load_skill_data(skill_file)
         assert conditions["requires_toolsets"] == ["terminal"]
 
     def test_reads_multiple_conditions(self, tmp_path):
@@ -494,28 +497,9 @@ class TestReadSkillConditions:
         skill_file.write_text(
             "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
         )
-        conditions = _read_skill_conditions(skill_file)
+        _, _, _, conditions = _load_skill_data(skill_file)
         assert conditions["fallback_for_toolsets"] == ["browser"]
         assert conditions["requires_tools"] == ["terminal"]
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        conditions = _read_skill_conditions(tmp_path / "missing.md")
-        assert conditions == {}
-
-    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
-
-        def boom(*args, **kwargs):
-            raise OSError("read exploded")
-
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            conditions = _read_skill_conditions(skill_file)
-
-        assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
-        assert str(skill_file) in caplog.text
 
 
 class TestSkillShouldShow:
