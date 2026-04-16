@@ -3562,8 +3562,16 @@ class HermesCLI:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
                     import subprocess
+                    from tools.approval import check_all_command_guards
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Pre-execution security check
+                        guard = check_all_command_guards(exec_cmd, "local",
+                                                        approval_callback=self._approval_callback)
+                        if not guard.get("approved", True):
+                            self.console.print(f"[bold red]{guard.get('message', 'Command blocked by security guard.')}[/]")
+                            return True
+
                         try:
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,

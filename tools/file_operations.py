@@ -28,20 +28,22 @@ Usage:
 import os
 import re
 import json
+import logging
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Write-path deny list — blocks writes to sensitive system/credential files
+# Path deny list — blocks access to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
+PATH_DENIED_PATHS = {
     os.path.realpath(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
         os.path.join(_HOME, ".ssh", "id_rsa"),
@@ -63,7 +65,7 @@ WRITE_DENIED_PATHS = {
     ]
 }
 
-WRITE_DENIED_PREFIXES = [
+PATH_DENIED_PREFIXES = [
     os.path.realpath(p) + os.sep for p in [
         os.path.join(_HOME, ".ssh"),
         os.path.join(_HOME, ".aws"),
@@ -75,12 +77,12 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
+def _is_path_denied(path: str) -> bool:
+    """Return True if path is on the deny list (read/write/delete)."""
     resolved = os.path.realpath(os.path.expanduser(path))
-    if resolved in WRITE_DENIED_PATHS:
+    if resolved in PATH_DENIED_PATHS:
         return True
-    for prefix in WRITE_DENIED_PREFIXES:
+    for prefix in PATH_DENIED_PREFIXES:
         if resolved.startswith(prefix):
             return True
     return False
@@ -239,6 +241,16 @@ class FileOperations(ABC):
         """Apply a V4A format patch."""
         ...
     
+    @abstractmethod
+    def delete_file(self, path: str) -> bool:
+        """Delete a file."""
+        ...
+
+    @abstractmethod
+    def move_file(self, old_path: str, new_path: str) -> bool:
+        """Move or rename a file."""
+        ...
+
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
@@ -447,7 +459,11 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block reading from sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected system/credential file.")
+
         # Clamp limit
         limit = min(limit, MAX_LINES)
         
@@ -637,7 +653,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
@@ -694,7 +710,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
@@ -767,6 +783,33 @@ class ShellFileOperations(FileOperations):
         result = apply_v4a_operations(operations, self)
         return result
     
+    def delete_file(self, path: str) -> bool:
+        """Delete a file with path security check."""
+        path = self._expand_path(path)
+        if _is_path_denied(path):
+            logger.warning("Delete denied: '%s' is a protected system/credential file.", path)
+            return False
+
+        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+        return result.exit_code == 0
+
+    def move_file(self, old_path: str, new_path: str) -> bool:
+        """Move or rename a file with path security checks."""
+        old_path = self._expand_path(old_path)
+        new_path = self._expand_path(new_path)
+
+        if _is_path_denied(old_path):
+            logger.warning("Move source denied: '%s' is a protected system/credential file.", old_path)
+            return False
+        if _is_path_denied(new_path):
+            logger.warning("Move destination denied: '%s' is a protected system/credential file.", new_path)
+            return False
+
+        result = self._exec(
+            f"mv {self._escape_shell_arg(old_path)} {self._escape_shell_arg(new_path)}"
+        )
+        return result.exit_code == 0
+
     def _check_lint(self, path: str) -> LintResult:
         """
         Run syntax check on a file after editing.
