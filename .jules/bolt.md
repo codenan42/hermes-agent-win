@@ -1,0 +1,3 @@
+## 2026-04-18 - [Optimization of SessionDB initialization]
+**Learning:** Investigation of `hermes_state.py` confirmed that `SessionDB` initialization lacks a class-level `_initialized_paths` cache, causing redundant schema and migration checks on every instantiation. Benchmarks show cold starts at ~23-40ms and warm starts at ~0.8ms. While warm starts are relatively fast, bypassing `_init_schema` for existing paths in the same process reduces it further to ~0.7ms and eliminates redundant disk I/O and query execution.
+**Action:** Implement a class-level set `_initialized_paths` in `SessionDB` to track paths that have already completed the `_init_schema` check in the current process lifetime.

@@ -100,6 +100,9 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Cache of paths already initialized in this process to avoid redundant schema checks
+    _initialized_paths: set[str] = set()
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +116,12 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+        # Optimization: Skip redundant schema checks if this DB path was already initialized
+        # in the current process. This significantly reduces warm-start latency.
+        path_key = str(self.db_path.resolve())
+        if path_key not in SessionDB._initialized_paths:
+            self._init_schema()
+            SessionDB._initialized_paths.add(path_key)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
