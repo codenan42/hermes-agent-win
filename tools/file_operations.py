@@ -36,12 +36,12 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Write-path deny list — blocks writes to sensitive system/credential files
+# Path-based deny list — blocks access to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
+PATH_DENIED_PATHS = {
     os.path.realpath(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
         os.path.join(_HOME, ".ssh", "id_rsa"),
@@ -63,7 +63,7 @@ WRITE_DENIED_PATHS = {
     ]
 }
 
-WRITE_DENIED_PREFIXES = [
+PATH_DENIED_PREFIXES = [
     os.path.realpath(p) + os.sep for p in [
         os.path.join(_HOME, ".ssh"),
         os.path.join(_HOME, ".aws"),
@@ -75,12 +75,12 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
+def _is_path_denied(path: str) -> bool:
+    """Return True if path is on the path deny list (read/write/delete/move)."""
     resolved = os.path.realpath(os.path.expanduser(path))
-    if resolved in WRITE_DENIED_PATHS:
+    if resolved in PATH_DENIED_PATHS:
         return True
-    for prefix in WRITE_DENIED_PREFIXES:
+    for prefix in PATH_DENIED_PREFIXES:
         if resolved.startswith(prefix):
             return True
     return False
@@ -226,6 +226,16 @@ class FileOperations(ABC):
     @abstractmethod
     def write_file(self, path: str, content: str) -> WriteResult:
         """Write content to a file, creating directories as needed."""
+        ...
+
+    @abstractmethod
+    def delete_file(self, path: str) -> ExecuteResult:
+        """Delete a file."""
+        ...
+
+    @abstractmethod
+    def move_file(self, old_path: str, new_path: str) -> ExecuteResult:
+        """Move or rename a file."""
         ...
     
     @abstractmethod
@@ -447,7 +457,11 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block reads from sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected system/credential file.")
+
         # Clamp limit
         limit = min(limit, MAX_LINES)
         
@@ -637,7 +651,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
@@ -671,6 +685,28 @@ class ShellFileOperations(FileOperations):
             bytes_written=bytes_written,
             dirs_created=dirs_created
         )
+
+    def delete_file(self, path: str) -> ExecuteResult:
+        """Delete a file with security checks."""
+        path = self._expand_path(path)
+        if _is_path_denied(path):
+            return ExecuteResult(stdout=f"Delete denied: '{path}' is protected.", exit_code=1)
+
+        return self._exec(f"rm -f {self._escape_shell_arg(path)}")
+
+    def move_file(self, old_path: str, new_path: str) -> ExecuteResult:
+        """Move or rename a file with security checks."""
+        old_path = self._expand_path(old_path)
+        new_path = self._expand_path(new_path)
+
+        if _is_path_denied(old_path):
+            return ExecuteResult(stdout=f"Move denied (source): '{old_path}' is protected.", exit_code=1)
+        if _is_path_denied(new_path):
+            return ExecuteResult(stdout=f"Move denied (destination): '{new_path}' is protected.", exit_code=1)
+
+        return self._exec(
+            f"mv {self._escape_shell_arg(old_path)} {self._escape_shell_arg(new_path)}"
+        )
     
     # =========================================================================
     # PATCH Implementation (Replace Mode)
@@ -694,7 +730,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
