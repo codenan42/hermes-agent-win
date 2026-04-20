@@ -324,8 +324,8 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
         # File doesn't exist, nothing to delete
         return True, f"# {op.file_path} already deleted or doesn't exist"
     
-    # Delete directly via shell command using the underlying environment
-    rm_result = file_ops._exec(f"rm -f {file_ops._escape_shell_arg(op.file_path)}")
+    # Use the secure delete_file method
+    rm_result = file_ops.delete_file(op.file_path)
     
     if rm_result.exit_code != 0:
         return False, rm_result.stdout
@@ -336,10 +336,8 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
-    # Use shell mv command
-    mv_result = file_ops._exec(
-        f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
-    )
+    # Use the secure move_file method
+    mv_result = file_ops.move_file(op.file_path, op.new_path)
     
     if mv_result.exit_code != 0:
         return False, mv_result.stdout
