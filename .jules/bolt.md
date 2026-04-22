@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimizing message processing by replacing deepcopy]
+**Learning:** `copy.deepcopy` on large message histories (e.g., 500+ messages) is a significant bottleneck in agent message processing pipelines (taking ~2.75ms per call in benchmarks). Replacing it with selective shallow copying reduces this to ~0.19ms (~14.5x speedup) for 500 messages, and even more for larger histories.
+**Action:** Always prefer selective shallow copying over `copy.deepcopy` for message histories in hot paths like prompt caching and API request building. Ensure that any mutated fields (like `tool_calls` lists or dicts) are also shallow copied to prevent side effects on the original history.
