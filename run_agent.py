@@ -3353,14 +3353,20 @@ class AIAgent:
         ):
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        # Shallow copy the list to avoid full deepcopy overhead
+        transformed = list(api_messages)
+        for i, msg in enumerate(transformed):
             if not isinstance(msg, dict):
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
+            content = msg.get("content")
+            if self._content_has_image_parts(content):
+                # Copy the message dict before modifying it
+                msg = msg.copy()
+                msg["content"] = self._preprocess_anthropic_content(
+                    content,
+                    str(msg.get("role", "user") or "user"),
+                )
+                transformed[i] = msg
         return transformed
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
@@ -3438,20 +3444,34 @@ class AIAgent:
                     break
 
         if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
+            sanitized_messages = list(api_messages)
+            for i, msg in enumerate(sanitized_messages):
                 if not isinstance(msg, dict):
                     continue
 
-                # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
-
+                # If this message contains keys we need to strip, copy it first.
+                # Avoid full deepcopy of all messages for performance.
+                has_codex_items = "codex_reasoning_items" in msg
                 tool_calls = msg.get("tool_calls")
+                has_codex_tool_ids = False
                 if isinstance(tool_calls, list):
                     for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
+                        if isinstance(tool_call, dict) and (
+                            "call_id" in tool_call or "response_item_id" in tool_call
+                        ):
+                            has_codex_tool_ids = True
+                            break
+
+                if has_codex_items or has_codex_tool_ids:
+                    msg = msg.copy()
+                    msg.pop("codex_reasoning_items", None)
+                    if has_codex_tool_ids:
+                        msg["tool_calls"] = [
+                            {k: v for k, v in tc.items() if k not in {"call_id", "response_item_id"}}
+                            if isinstance(tc, dict) else tc
+                            for tc in tool_calls
+                        ]
+                    sanitized_messages[i] = msg
 
         provider_preferences = {}
         if self.providers_allowed:
