@@ -6,9 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from tools.file_operations import (
-    _is_write_denied,
-    WRITE_DENIED_PATHS,
-    WRITE_DENIED_PREFIXES,
+    _is_path_denied,
     ReadResult,
     WriteResult,
     PatchResult,
@@ -29,33 +27,33 @@ from tools.file_operations import (
 class TestIsWriteDenied:
     def test_ssh_authorized_keys_denied(self):
         path = os.path.join(str(Path.home()), ".ssh", "authorized_keys")
-        assert _is_write_denied(path) is True
+        assert _is_path_denied(path) is True
 
     def test_ssh_id_rsa_denied(self):
         path = os.path.join(str(Path.home()), ".ssh", "id_rsa")
-        assert _is_write_denied(path) is True
+        assert _is_path_denied(path) is True
 
     def test_netrc_denied(self):
         path = os.path.join(str(Path.home()), ".netrc")
-        assert _is_write_denied(path) is True
+        assert _is_path_denied(path) is True
 
     def test_aws_prefix_denied(self):
         path = os.path.join(str(Path.home()), ".aws", "credentials")
-        assert _is_write_denied(path) is True
+        assert _is_path_denied(path) is True
 
     def test_kube_prefix_denied(self):
         path = os.path.join(str(Path.home()), ".kube", "config")
-        assert _is_write_denied(path) is True
+        assert _is_path_denied(path) is True
 
     def test_normal_file_allowed(self, tmp_path):
         path = str(tmp_path / "safe_file.txt")
-        assert _is_write_denied(path) is False
+        assert _is_path_denied(path) is False
 
     def test_project_file_allowed(self):
-        assert _is_write_denied("/tmp/project/main.py") is False
+        assert _is_path_denied("/tmp/project/main.py") is False
 
     def test_tilde_expansion(self):
-        assert _is_write_denied("~/.ssh/authorized_keys") is True
+        assert _is_path_denied("~/.ssh/authorized_keys") is True
 
 
 
