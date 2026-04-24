@@ -99,6 +99,7 @@ class SessionDB:
     Thread-safe for the common gateway pattern (multiple reader threads,
     single writer via WAL mode). Each method opens its own cursor.
     """
+    _initialized_paths = set()  # Class-level cache for schema initialization
 
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -113,7 +114,10 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+        resolved_path = str(self.db_path.resolve())
+        if resolved_path not in SessionDB._initialized_paths:
+            self._init_schema()
+            SessionDB._initialized_paths.add(resolved_path)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
