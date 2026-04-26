@@ -172,20 +172,42 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
+def _load_skill_data(skill_file: Path) -> dict:
+    """Read a SKILL.md once and return compatibility, frontmatter, description, and conditions.
 
-    Returns (is_compatible, frontmatter, description). On any error, returns
-    (True, {}, "") to err on the side of showing the skill.
+    Returns a dict with all parsed info. On error, returns defaults that err
+    on the side of showing the skill.
     """
+    defaults = {
+        "is_compatible": True,
+        "frontmatter": {},
+        "description": "",
+        "conditions": {
+            "fallback_for_toolsets": [],
+            "requires_toolsets": [],
+            "fallback_for_tools": [],
+            "requires_tools": [],
+        },
+    }
     try:
         from tools.skills_tool import _parse_frontmatter, skill_matches_platform
 
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        if not skill_file.exists():
+            return defaults
+
+        # Only read the frontmatter preamble
+        with open(skill_file, "r", encoding="utf-8") as f:
+            raw = f.read(2000)
+
+        # _parse_frontmatter expects \n---\s*\n to terminate the frontmatter.
+        # If the file starts with --- and ends with \n---\n, but doesn't have
+        # a newline BEFORE the first ---, it might fail if we aren't careful.
+        # Actually tools/skills_tool.py:_parse_frontmatter uses:
+        # if content.startswith("---"): end_match = re.search(r"\n---\s*\n", content[3:])
+        # So it DOES handle files starting with --- as long as they have \n---\n later.
         frontmatter, _ = _parse_frontmatter(raw)
 
-        if not skill_matches_platform(frontmatter):
-            return False, {}, ""
+        is_compatible = skill_matches_platform(frontmatter)
 
         desc = ""
         raw_desc = frontmatter.get("description", "")
@@ -194,28 +216,23 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
             if len(desc) > 60:
                 desc = desc[:57] + "..."
 
-        return True, frontmatter, desc
-    except Exception as e:
-        logger.debug("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
-
-
-def _read_skill_conditions(skill_file: Path) -> dict:
-    """Extract conditional activation fields from SKILL.md frontmatter."""
-    try:
-        from tools.skills_tool import _parse_frontmatter
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
         hermes = frontmatter.get("metadata", {}).get("hermes", {})
-        return {
+        conditions = {
             "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
             "requires_toolsets": hermes.get("requires_toolsets", []),
             "fallback_for_tools": hermes.get("fallback_for_tools", []),
             "requires_tools": hermes.get("requires_tools", []),
         }
+
+        return {
+            "is_compatible": is_compatible,
+            "frontmatter": frontmatter,
+            "description": desc,
+            "conditions": conditions,
+        }
     except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
-        return {}
+        logger.debug("Failed to load skill data from %s: %s", skill_file, e)
+        return defaults
 
 
 def _skill_should_show(
@@ -272,13 +289,13 @@ def build_skills_system_prompt(
     # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
-        if not is_compatible:
+        skill_data = _load_skill_data(skill_file)
+        if not skill_data["is_compatible"]:
             continue
         # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
-        if not _skill_should_show(conditions, available_tools, available_toolsets):
+        if not _skill_should_show(skill_data["conditions"], available_tools, available_toolsets):
             continue
+        desc = skill_data["description"]
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         if len(parts) >= 2:
