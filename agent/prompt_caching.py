@@ -8,7 +8,6 @@ the conversation prefix. Uses 4 cache_control breakpoints (Anthropic max):
 Pure functions -- no class state, no AIAgent dependency.
 """
 
-import copy
 from typing import Any, Dict, List
 
 
@@ -46,25 +45,49 @@ def apply_anthropic_cache_control(
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        Shallow copy of message list with targeted modifications to specific messages.
+        Significantly faster than deepcopy for large histories.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
+
+    # Shallow copy the list to avoid mutating the caller's list
+    messages = list(api_messages)
 
     marker = {"type": "ephemeral"}
     if cache_ttl == "1h":
         marker["ttl"] = "1h"
 
+    # Identify which indices we need to modify
+    to_modify = []
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
+        to_modify.append(0)
         breakpoints_used += 1
 
     remaining = 4 - breakpoints_used
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
     for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker)
+        to_modify.append(idx)
+
+    # Only shallow copy and mutate the messages at the identified indices
+    # This prevents side effects while avoiding the overhead of deepcopy
+    for idx in to_modify:
+        msg = messages[idx].copy()
+
+        # If content is a list, we might mutate its last element in _apply_cache_marker
+        content = msg.get("content")
+        if isinstance(content, list) and content:
+            # Shallow copy the content list
+            new_content = list(content)
+            last = new_content[-1]
+            if isinstance(last, dict):
+                # Shallow copy the last dict in the content list
+                new_content[-1] = last.copy()
+            msg["content"] = new_content
+
+        _apply_cache_marker(msg, marker)
+        messages[idx] = msg
 
     return messages
