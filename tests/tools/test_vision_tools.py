@@ -403,3 +403,18 @@ class TestVisionRegistration:
 
         entry = registry._tools.get("vision_analyze")
         assert callable(entry.handler)
+
+
+class TestVisionPathSecurity:
+    @pytest.mark.asyncio
+    async def test_analyze_local_blocked(self):
+        # Use a path that is guaranteed to be in PATH_DENIED_PATHS
+        sensitive_path = os.path.expanduser("~/.ssh/id_rsa")
+
+        # Mock is_file to True so it enters the check block
+        with patch("pathlib.Path.is_file", return_value=True):
+            # This should be blocked by _is_path_denied
+            result = await vision_analyze_tool(sensitive_path, "what is this")
+            result_data = json.loads(result)
+            assert result_data["success"] is False
+            assert "Access denied" in result_data["error"]
