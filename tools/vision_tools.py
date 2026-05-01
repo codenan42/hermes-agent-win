@@ -245,6 +245,10 @@ async def vision_analyze_tool(
         local_path = Path(image_url)
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
+            from tools.file_operations import _is_path_denied
+            if _is_path_denied(image_url):
+                raise ValueError(f"Access denied: '{image_url}' is a protected system/credential file.")
+
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files

@@ -36,12 +36,12 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Write-path deny list — blocks writes to sensitive system/credential files
+# Path-based access control — blocks access to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
+PATH_DENIED_PATHS = {
     os.path.realpath(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
         os.path.join(_HOME, ".ssh", "id_rsa"),
@@ -63,7 +63,7 @@ WRITE_DENIED_PATHS = {
     ]
 }
 
-WRITE_DENIED_PREFIXES = [
+PATH_DENIED_PREFIXES = [
     os.path.realpath(p) + os.sep for p in [
         os.path.join(_HOME, ".ssh"),
         os.path.join(_HOME, ".aws"),
@@ -75,13 +75,19 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
+def _is_path_denied(path: str) -> bool:
+    """Return True if access to this path is blocked for security reasons."""
+    if not path:
+        return False
     resolved = os.path.realpath(os.path.expanduser(path))
-    if resolved in WRITE_DENIED_PATHS:
+    if resolved in PATH_DENIED_PATHS:
         return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
+    # For directory matching, ensure we check against a path ending in a separator
+    # to avoid partial matches (e.g., /root/secret-file should not be blocked if
+    # /root/sec is denied, but /root/secret/file should be).
+    resolved_with_sep = resolved if resolved.endswith(os.sep) else resolved + os.sep
+    for prefix in PATH_DENIED_PREFIXES:
+        if resolved_with_sep.startswith(prefix):
             return True
     return False
 
@@ -244,6 +250,16 @@ class FileOperations(ABC):
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """Search for content or files."""
+        ...
+
+    @abstractmethod
+    def delete_file(self, path: str) -> ExecuteResult:
+        """Delete a file."""
+        ...
+
+    @abstractmethod
+    def move_file(self, src: str, dst: str) -> ExecuteResult:
+        """Move or rename a file."""
         ...
 
 
@@ -447,6 +463,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block access to sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Access denied: '{path}' is a protected system/credential file.")
         
         # Clamp limit
         limit = min(limit, MAX_LINES)
@@ -637,7 +657,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
@@ -694,7 +714,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if _is_path_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
@@ -824,6 +844,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block access to sensitive paths
+        if _is_path_denied(path):
+            return SearchResult(error=f"Access denied: '{path}' is a protected system/credential file.")
         
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
@@ -1000,6 +1024,26 @@ class ShellFileOperations(FileOperations):
                 truncated=total > offset + limit
             )
     
+    def delete_file(self, path: str) -> ExecuteResult:
+        """Delete a file."""
+        path = self._expand_path(path)
+        if _is_path_denied(path):
+            return ExecuteResult(stdout=f"Delete denied: '{path}' is a protected system/credential file.", exit_code=1)
+
+        return self._exec(f"rm -f {self._escape_shell_arg(path)}")
+
+    def move_file(self, src: str, dst: str) -> ExecuteResult:
+        """Move or rename a file."""
+        src = self._expand_path(src)
+        dst = self._expand_path(dst)
+
+        if _is_path_denied(src):
+            return ExecuteResult(stdout=f"Move denied: '{src}' is a protected system/credential file.", exit_code=1)
+        if _is_path_denied(dst):
+            return ExecuteResult(stdout=f"Move denied: '{dst}' is a protected system/credential file.", exit_code=1)
+
+        return self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")
+
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
