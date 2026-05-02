@@ -172,17 +172,36 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+def _load_skill_data(skill_file: Path) -> tuple[dict, str]:
+    """Read the first 2000 chars of a skill file and parse frontmatter.
+
+    Returns (frontmatter, raw_content).
+    """
+    try:
+        # Optimized: read only the first 2000 chars to avoid loading huge files
+        # if the skill description/header is all we need.
+        with open(skill_file, "r", encoding="utf-8") as f:
+            raw = f.read(2000)
+
+        from tools.skills_tool import _parse_frontmatter
+        frontmatter, content = _parse_frontmatter(raw)
+        return frontmatter, content
+    except Exception as e:
+        logger.debug("Failed to load skill data from %s: %s", skill_file, e)
+        return {}, ""
+
+
+def _parse_skill_file(skill_file: Path, frontmatter: dict = None) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
     Returns (is_compatible, frontmatter, description). On any error, returns
     (True, {}, "") to err on the side of showing the skill.
     """
     try:
-        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+        from tools.skills_tool import skill_matches_platform
 
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
+        if frontmatter is None:
+            frontmatter, _ = _load_skill_data(skill_file)
 
         if not skill_matches_platform(frontmatter):
             return False, {}, ""
@@ -200,12 +219,15 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         return True, {}, ""
 
 
-def _read_skill_conditions(skill_file: Path) -> dict:
+def _read_skill_conditions(skill_file: Path, frontmatter: dict = None) -> dict:
     """Extract conditional activation fields from SKILL.md frontmatter."""
+    if frontmatter is None:
+        frontmatter, _ = _load_skill_data(skill_file)
+
+    if not frontmatter:
+        return {}
+
     try:
-        from tools.skills_tool import _parse_frontmatter
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
         hermes = frontmatter.get("metadata", {}).get("hermes", {})
         return {
             "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
@@ -272,11 +294,12 @@ def build_skills_system_prompt(
     # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
+        frontmatter, _ = _load_skill_data(skill_file)
+        is_compatible, _, desc = _parse_skill_file(skill_file, frontmatter=frontmatter)
         if not is_compatible:
             continue
         # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
+        conditions = _read_skill_conditions(skill_file, frontmatter=frontmatter)
         if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
@@ -305,7 +328,9 @@ def build_skills_system_prompt(
         desc_file = skills_dir / cat_path / "DESCRIPTION.md"
         if desc_file.exists():
             try:
-                content = desc_file.read_text(encoding="utf-8")
+                # Optimized: avoid reading full file for just the frontmatter description
+                with open(desc_file, "r", encoding="utf-8") as f:
+                    content = f.read(2000)
                 match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
                 if match:
                     category_descriptions[category] = match.group(1).strip()
