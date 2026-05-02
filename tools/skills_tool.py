@@ -439,7 +439,12 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
             body = content[end_match.end() + 3 :]
 
             try:
-                parsed = yaml.safe_load(yaml_content)
+                try:
+                    from yaml import CSafeLoader as SafeLoader
+                except ImportError:
+                    from yaml import SafeLoader
+
+                parsed = yaml.load(yaml_content, Loader=SafeLoader)
                 if isinstance(parsed, dict):
                     frontmatter = parsed
                 # yaml.safe_load returns None for empty frontmatter
