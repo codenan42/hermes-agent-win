@@ -1,0 +1,3 @@
+## 2025-05-14 - [Replace deepcopy with selective shallow copying in prompt caching]
+**Learning:** Using `copy.deepcopy` on large conversation histories (500+ messages) during every tool-calling iteration introduces significant latency (~130ms per call). Since only a few messages (max 4) are modified for Anthropic prompt caching, selective shallow copying of the list and the specific messages being modified is much more efficient.
+**Action:** Always prefer selective shallow copying over `deepcopy` for large data structures when only specific parts are being modified and immutability of the original input must be preserved.
