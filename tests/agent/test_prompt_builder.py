@@ -179,7 +179,7 @@ class TestParseSkillFile:
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
-        assert "Failed to parse skill file" in caplog.text
+        assert "Failed to load skill data" in caplog.text
         assert str(skill_file) in caplog.text
 
     def test_incompatible_platform_returns_false(self, tmp_path):
@@ -514,7 +514,7 @@ class TestReadSkillConditions:
             conditions = _read_skill_conditions(skill_file)
 
         assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
+        assert "Failed to load skill data" in caplog.text
         assert str(skill_file) in caplog.text
 
 
