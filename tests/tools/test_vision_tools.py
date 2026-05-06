@@ -20,6 +20,8 @@ from tools.vision_tools import (
     get_debug_session_info,
 )
 
+from tools.file_operations import _is_path_denied
+
 
 # ---------------------------------------------------------------------------
 # _validate_image_url — urlparse-based validation
@@ -371,6 +373,27 @@ class TestVisionRequirements:
         assert "enabled" in info
         assert "session_id" in info
         assert "total_calls" in info
+
+
+# ---------------------------------------------------------------------------
+# Path denial checks
+# ---------------------------------------------------------------------------
+
+
+class TestVisionPathDenial:
+    @pytest.mark.asyncio
+    async def test_vision_analyze_blocks_sensitive_local_path(self):
+        # We need to make sure the file exists for Path(image_url).is_file() to be True
+        with patch("tools.vision_tools.Path.is_file", return_value=True):
+            # Pick a path that is guaranteed to be denied
+            sensitive_path = os.path.join(str(Path.home()), ".ssh", "id_rsa")
+
+            result_json = await vision_analyze_tool(sensitive_path, "what is this?")
+            result = json.loads(result_json)
+
+            assert result["success"] is False
+            assert "Access denied" in result["error"]
+            assert "restricted" in result["analysis"]
 
 
 # ---------------------------------------------------------------------------
