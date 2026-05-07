@@ -18,9 +18,10 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
@@ -100,6 +101,12 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Cache to skip _init_schema() for already initialized database paths
+    # within the same process. Initialization involves schema checks,
+    # migrations, and FTS5 setup which adds measurable overhead.
+    _initialized_paths: Set[str] = set()
+    _init_lock = threading.Lock()
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +120,18 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+        # Skip initialization if this database path was already handled
+        # in the current process. Special SQLite paths like ":memory:"
+        # are never cached because each connection is a fresh database.
+        db_path_str = str(self.db_path)
+        if db_path_str in (":memory:", ""):
+            self._init_schema()
+        else:
+            abs_path = str(self.db_path.absolute())
+            with self._init_lock:
+                if abs_path not in self._initialized_paths:
+                    self._init_schema()
+                    self._initialized_paths.add(abs_path)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
