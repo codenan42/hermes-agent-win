@@ -317,6 +317,13 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
+    # Security check: block access to sensitive paths
+    if hasattr(file_ops, '_expand_path'):
+        path = file_ops._expand_path(op.file_path)
+        from tools.file_operations import _is_path_denied
+        if _is_path_denied(path):
+            return False, f"Access denied: '{path}' is a protected system/credential file."
+
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
     
@@ -336,6 +343,14 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    # Security check: block access to sensitive paths
+    if hasattr(file_ops, '_expand_path'):
+        from tools.file_operations import _is_path_denied
+        src = file_ops._expand_path(op.file_path)
+        dst = file_ops._expand_path(op.new_path)
+        if _is_path_denied(src) or _is_path_denied(dst):
+            return False, f"Access denied: protected system/credential file involved in move."
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
