@@ -172,21 +172,25 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
+def _load_skill_data(skill_file: Path, parse_fn=None, match_fn=None) -> tuple[bool, str, dict]:
+    """Read a SKILL.md once and return (is_compatible, description, conditions).
 
-    Returns (is_compatible, frontmatter, description). On any error, returns
-    (True, {}, "") to err on the side of showing the skill.
+    Returns (is_compatible, description, conditions). On any error, returns
+    (True, "", {}) to err on the side of showing the skill.
     """
     try:
-        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+        if parse_fn is None or match_fn is None:
+            from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+            parse_fn = _parse_frontmatter
+            match_fn = skill_matches_platform
 
         raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
+        frontmatter, _ = parse_fn(raw)
 
-        if not skill_matches_platform(frontmatter):
-            return False, {}, ""
+        if not match_fn(frontmatter):
+            return False, "", {}
 
+        # 1. Extract description
         desc = ""
         raw_desc = frontmatter.get("description", "")
         if raw_desc:
@@ -194,28 +198,19 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
             if len(desc) > 60:
                 desc = desc[:57] + "..."
 
-        return True, frontmatter, desc
-    except Exception as e:
-        logger.debug("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
-
-
-def _read_skill_conditions(skill_file: Path) -> dict:
-    """Extract conditional activation fields from SKILL.md frontmatter."""
-    try:
-        from tools.skills_tool import _parse_frontmatter
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
+        # 2. Extract conditions
         hermes = frontmatter.get("metadata", {}).get("hermes", {})
-        return {
+        conditions = {
             "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
             "requires_toolsets": hermes.get("requires_toolsets", []),
             "fallback_for_tools": hermes.get("fallback_for_tools", []),
             "requires_tools": hermes.get("requires_tools", []),
         }
+
+        return True, desc, conditions
     except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
-        return {}
+        logger.debug("Failed to load skill data from %s: %s", skill_file, e)
+        return True, "", {}
 
 
 def _skill_should_show(
@@ -271,12 +266,26 @@ def build_skills_system_prompt(
     # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
     # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
+
+    # Import once outside the loop
+    try:
+        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+    except ImportError:
+        _parse_frontmatter = None
+        skill_matches_platform = None
+
     for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
+        # Load data once to avoid repeated file I/O
+        is_compatible, desc, conditions = _load_skill_data(
+            skill_file,
+            parse_fn=_parse_frontmatter,
+            match_fn=skill_matches_platform
+        )
+
         if not is_compatible:
             continue
+
         # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
         if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
