@@ -317,6 +317,12 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
+    # Expand and check path denial
+    path = file_ops._expand_path(op.file_path)
+    from tools.file_operations import _is_path_denied
+    if _is_path_denied(path):
+        return False, f"Access denied: '{path}' is a protected system/credential file."
+
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
     
@@ -324,6 +330,9 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
         # File doesn't exist, nothing to delete
         return True, f"# {op.file_path} already deleted or doesn't exist"
     
+    if read_result.error and "Access denied" in read_result.error:
+        return False, read_result.error
+
     # Delete directly via shell command using the underlying environment
     rm_result = file_ops._exec(f"rm -f {file_ops._escape_shell_arg(op.file_path)}")
     
@@ -336,6 +345,15 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    # Expand and check path denial
+    old_path = file_ops._expand_path(op.file_path)
+    new_path = file_ops._expand_path(op.new_path)
+    from tools.file_operations import _is_path_denied
+    if _is_path_denied(old_path):
+        return False, f"Access denied: '{old_path}' is a protected system/credential file."
+    if _is_path_denied(new_path):
+        return False, f"Access denied: '{new_path}' is a protected system/credential file."
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
