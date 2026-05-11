@@ -290,6 +290,19 @@ class TestErrorLoggingExcInfo:
             assert any(r.exc_info and r.exc_info[0] is not None for r in error_records)
 
     @pytest.mark.asyncio
+    async def test_vision_analyze_denied_path(self):
+        """vision_analyze_tool should block local files that are on the deny list."""
+        with patch("pathlib.Path.is_file", return_value=True):
+            # Use a path that is definitely denied
+            denied_path = "/etc/shadow"
+            result = await vision_analyze_tool(denied_path, "what is this?", "test/model")
+
+            result_data = json.loads(result)
+            assert result_data["success"] is False
+            assert "Access denied" in result_data["error"]
+            assert "protected system/credential file" in result_data["error"]
+
+    @pytest.mark.asyncio
     async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):
         """Temp file cleanup failure should log warning with exc_info."""
         # Create a real temp file that will be "downloaded"
