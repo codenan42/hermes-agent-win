@@ -63,6 +63,11 @@ class TestEnvAssignments:
         assert "MY_SECRET_TOKEN=" in result
         assert "supersecretvalue" not in result
 
+    def test_quoted_value_with_spaces(self):
+        text = 'export MY_PASSWORD="my secret password"'
+        result = redact_sensitive_text(text)
+        assert 'MY_PASSWORD="my sec...word"' in result
+
     def test_non_secret_env_unchanged(self):
         text = "HOME=/home/user"
         result = redact_sensitive_text(text)
@@ -102,6 +107,11 @@ class TestAuthHeaders:
         text = "authorization: bearer mytoken123456789012345678"
         result = redact_sensitive_text(text)
         assert "mytoken12345" not in result
+
+    def test_bearer_token_quoted_with_spaces(self):
+        text = 'Authorization: Bearer "token with spaces"'
+        result = redact_sensitive_text(text)
+        assert 'Authorization: Bearer "***"' in result
 
 
 class TestTelegramTokens:

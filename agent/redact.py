@@ -43,7 +43,7 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION|CSRF|XSRF)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(?:(['\"])(.*?)\2|(\S+))",
     re.IGNORECASE,
 )
 
@@ -56,7 +56,7 @@ _JSON_FIELD_RE = re.compile(
 
 # Authorization headers
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization:\s*(?:Bearer|Basic)\s+)(\S+)",
+    r"(Authorization:\s*(?:Bearer|Basic)\s+)(?:(['\"])(.*?)\2|(\S+))",
     re.IGNORECASE,
 )
 
@@ -111,7 +111,9 @@ def redact_sensitive_text(text: str) -> str:
 
     # ENV assignments: OPENAI_API_KEY=sk-abc...
     def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
+        name = m.group(1)
+        quote = m.group(2) or ""
+        value = m.group(3) if m.group(3) is not None else m.group(4)
         return f"{name}={quote}{_mask_token(value)}{quote}"
     text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
@@ -122,10 +124,12 @@ def redact_sensitive_text(text: str) -> str:
     text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers
-    text = _AUTH_HEADER_RE.sub(
-        lambda m: m.group(1) + _mask_token(m.group(2)),
-        text,
-    )
+    def _redact_auth(m):
+        prefix = m.group(1)
+        quote = m.group(2) or ""
+        value = m.group(3) if m.group(3) is not None else m.group(4)
+        return f"{prefix}{quote}{_mask_token(value)}{quote}"
+    text = _AUTH_HEADER_RE.sub(_redact_auth, text)
 
     # Telegram bot tokens
     def _redact_telegram(m):
