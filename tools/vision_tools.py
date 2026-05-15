@@ -35,6 +35,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from tools.file_operations import _is_path_denied
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
@@ -242,8 +243,13 @@ async def vision_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
-        local_path = Path(image_url)
+        expanded_url = os.path.expanduser(image_url)
+        local_path = Path(expanded_url)
         if local_path.is_file():
+            # Block access to sensitive paths
+            if _is_path_denied(expanded_url):
+                raise ValueError(f"Access denied: '{image_url}' is a protected directory/file.")
+
             # Local file path (e.g. from platform image cache) -- skip download
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
