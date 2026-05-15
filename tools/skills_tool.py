@@ -76,6 +76,10 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
+try:
+    from yaml import CSafeLoader as YamlLoader
+except ImportError:
+    from yaml import SafeLoader as YamlLoader
 from hermes_cli.config import load_env, _ENV_VAR_NAME_RE
 from tools.registry import registry
 
@@ -420,7 +424,7 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """
     Parse YAML frontmatter from markdown content.
 
-    Uses yaml.safe_load for full YAML support (nested metadata, lists, etc.)
+    Uses yaml.load with CSafeLoader for full YAML support (nested metadata, lists, etc.)
     with a fallback to simple key:value splitting for robustness.
 
     Args:
@@ -439,10 +443,10 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
             body = content[end_match.end() + 3 :]
 
             try:
-                parsed = yaml.safe_load(yaml_content)
+                parsed = yaml.load(yaml_content, Loader=YamlLoader)
                 if isinstance(parsed, dict):
                     frontmatter = parsed
-                # yaml.safe_load returns None for empty frontmatter
+                # yaml.load returns None for empty frontmatter
             except yaml.YAMLError:
                 # Fallback: simple key:value parsing for malformed YAML
                 for line in yaml_content.strip().split("\n"):
