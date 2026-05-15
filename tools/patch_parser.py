@@ -317,6 +317,14 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
+    # Import security check
+    from tools.file_operations import _is_path_denied
+
+    # Expand and check security
+    full_path = file_ops._expand_path(op.file_path)
+    if _is_path_denied(full_path):
+        return False, f"Access denied: '{op.file_path}' is a protected directory/file."
+
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
     
@@ -336,6 +344,17 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    # Import security check
+    from tools.file_operations import _is_path_denied
+
+    # Expand and check security for BOTH paths
+    full_old_path = file_ops._expand_path(op.file_path)
+    full_new_path = file_ops._expand_path(op.new_path)
+    if _is_path_denied(full_old_path):
+        return False, f"Access denied: '{op.file_path}' is a protected directory/file."
+    if _is_path_denied(full_new_path):
+        return False, f"Access denied: '{op.new_path}' is a protected directory/file."
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
