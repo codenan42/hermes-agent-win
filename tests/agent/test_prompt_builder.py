@@ -179,7 +179,7 @@ class TestParseSkillFile:
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
-        assert "Failed to parse skill file" in caplog.text
+        assert "Failed to load skill data" in caplog.text
         assert str(skill_file) in caplog.text
 
     def test_incompatible_platform_returns_false(self, tmp_path):
@@ -500,7 +500,12 @@ class TestReadSkillConditions:
 
     def test_missing_file_returns_empty(self, tmp_path):
         conditions = _read_skill_conditions(tmp_path / "missing.md")
-        assert conditions == {}
+        assert conditions == {
+            "fallback_for_toolsets": [],
+            "requires_toolsets": [],
+            "fallback_for_tools": [],
+            "requires_tools": [],
+        }
 
     def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
         skill_file = tmp_path / "SKILL.md"
@@ -513,8 +518,13 @@ class TestReadSkillConditions:
         with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
             conditions = _read_skill_conditions(skill_file)
 
-        assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
+        assert conditions == {
+            "fallback_for_toolsets": [],
+            "requires_toolsets": [],
+            "fallback_for_tools": [],
+            "requires_tools": [],
+        }
+        assert "Failed to load skill data" in caplog.text
         assert str(skill_file) in caplog.text
 
 
