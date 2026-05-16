@@ -478,6 +478,7 @@ from cron import get_job
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
+from tools.approval import check_all_command_guards
 from tools.skills_tool import set_secret_capture_callback
 from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
@@ -3564,6 +3565,15 @@ class HermesCLI:
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Security check before execution
+                        guard_result = check_all_command_guards(
+                            exec_cmd, "local", approval_callback=self._approval_callback
+                        )
+                        if not guard_result.get("approved"):
+                            msg = guard_result.get("message") or "Command blocked by security guard"
+                            self.console.print(f"[bold red]{msg}[/]")
+                            return
+
                         try:
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,

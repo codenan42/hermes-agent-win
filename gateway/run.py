@@ -1400,6 +1400,11 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        from tools.approval import check_all_command_guards
+                        guard_result = check_all_command_guards(exec_cmd, "local")
+                        if not guard_result.get("approved"):
+                            return guard_result.get("message") or "Command blocked by security guard"
+
                         try:
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
