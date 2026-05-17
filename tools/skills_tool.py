@@ -76,6 +76,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
+try:
+    from yaml import CSafeLoader as YamlSafeLoader
+except ImportError:
+    from yaml import SafeLoader as YamlSafeLoader
+
 from hermes_cli.config import load_env, _ENV_VAR_NAME_RE
 from tools.registry import registry
 
@@ -439,10 +444,10 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
             body = content[end_match.end() + 3 :]
 
             try:
-                parsed = yaml.safe_load(yaml_content)
+                parsed = yaml.load(yaml_content, Loader=YamlSafeLoader)
                 if isinstance(parsed, dict):
                     frontmatter = parsed
-                # yaml.safe_load returns None for empty frontmatter
+                # yaml.load returns None for empty frontmatter
             except yaml.YAMLError:
                 # Fallback: simple key:value parsing for malformed YAML
                 for line in yaml_content.strip().split("\n"):
