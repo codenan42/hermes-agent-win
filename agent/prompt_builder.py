@@ -10,6 +10,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
+import yaml
+try:
+    from yaml import CSafeLoader as SafeLoader
+except ImportError:
+    from yaml import SafeLoader
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -172,21 +178,22 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
+def _load_skill_data(skill_file: Path) -> dict:
+    """Read and parse SKILL.md frontmatter and extract metadata.
 
-    Returns (is_compatible, frontmatter, description). On any error, returns
-    (True, {}, "") to err on the side of showing the skill.
+    Returns a dict with:
+    - frontmatter: the raw parsed YAML
+    - description: truncated description string
+    - is_compatible: boolean for platform compatibility
+    - conditions: dict of conditional activation rules
     """
     try:
         from tools.skills_tool import _parse_frontmatter, skill_matches_platform
 
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        raw = skill_file.read_text(encoding="utf-8")
         frontmatter, _ = _parse_frontmatter(raw)
 
-        if not skill_matches_platform(frontmatter):
-            return False, {}, ""
-
+        # Extract description
         desc = ""
         raw_desc = frontmatter.get("description", "")
         if raw_desc:
@@ -194,28 +201,61 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
             if len(desc) > 60:
                 desc = desc[:57] + "..."
 
-        return True, frontmatter, desc
-    except Exception as e:
-        logger.debug("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
+        # Platform check
+        is_compatible = skill_matches_platform(frontmatter)
 
-
-def _read_skill_conditions(skill_file: Path) -> dict:
-    """Extract conditional activation fields from SKILL.md frontmatter."""
-    try:
-        from tools.skills_tool import _parse_frontmatter
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
+        # Activation conditions
         hermes = frontmatter.get("metadata", {}).get("hermes", {})
-        return {
+        conditions = {
             "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
             "requires_toolsets": hermes.get("requires_toolsets", []),
             "fallback_for_tools": hermes.get("fallback_for_tools", []),
             "requires_tools": hermes.get("requires_tools", []),
         }
+
+        return {
+            "frontmatter": frontmatter,
+            "description": desc,
+            "is_compatible": is_compatible,
+            "conditions": conditions,
+        }
     except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
+        logger.debug("Failed to read skill data from %s: %s", skill_file, e)
+        return {
+            "frontmatter": {},
+            "description": "",
+            "is_compatible": True,
+            "conditions": {
+                "fallback_for_toolsets": [],
+                "requires_toolsets": [],
+                "fallback_for_tools": [],
+                "requires_tools": [],
+            },
+        }
+
+
+def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
+
+    Returns (is_compatible, frontmatter, description). On any error, returns
+    (True, {}, "") to err on the side of showing the skill.
+    """
+    data = _load_skill_data(skill_file)
+    if not data["frontmatter"]:
+        logger.debug("Failed to parse skill file %s", skill_file)
+    return data["is_compatible"], data["frontmatter"], data["description"]
+
+
+def _read_skill_conditions(skill_file: Path) -> dict:
+    """Extract conditional activation fields from SKILL.md frontmatter."""
+    data = _load_skill_data(skill_file)
+    if not data["frontmatter"] and not skill_file.exists():
+        # Keep existing behavior for missing file
         return {}
+    if not data["frontmatter"]:
+        logger.debug("Failed to read skill conditions from %s", skill_file)
+        return {}
+    return data["conditions"]
 
 
 def _skill_should_show(
@@ -272,12 +312,11 @@ def build_skills_system_prompt(
     # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
-        if not is_compatible:
+        data = _load_skill_data(skill_file)
+        if not data["is_compatible"]:
             continue
         # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
-        if not _skill_should_show(conditions, available_tools, available_toolsets):
+        if not _skill_should_show(data["conditions"], available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
@@ -292,7 +331,7 @@ def build_skills_system_prompt(
         else:
             category = "general"
             skill_name = skill_file.parent.name
-        skills_by_category.setdefault(category, []).append((skill_name, desc))
+        skills_by_category.setdefault(category, []).append((skill_name, data["description"]))
 
     if not skills_by_category:
         return ""
