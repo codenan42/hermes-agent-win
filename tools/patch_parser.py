@@ -324,6 +324,11 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
         # File doesn't exist, nothing to delete
         return True, f"# {op.file_path} already deleted or doesn't exist"
     
+    # Block access to sensitive paths
+    from tools.file_operations import _is_path_denied
+    if _is_path_denied(op.file_path):
+        return False, f"Access denied: '{op.file_path}' is a protected system/credential file."
+
     # Delete directly via shell command using the underlying environment
     rm_result = file_ops._exec(f"rm -f {file_ops._escape_shell_arg(op.file_path)}")
     
@@ -336,6 +341,13 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    # Block access to sensitive paths
+    from tools.file_operations import _is_path_denied
+    if _is_path_denied(op.file_path):
+        return False, f"Access denied: '{op.file_path}' is a protected system/credential file (source)."
+    if _is_path_denied(op.new_path):
+        return False, f"Access denied: '{op.new_path}' is a protected system/credential file (destination)."
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
