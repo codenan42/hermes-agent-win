@@ -242,9 +242,18 @@ async def vision_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
-        local_path = Path(image_url)
+        # Expand user first (~/...) to support shell-style paths in image_url
+        try:
+            local_path = Path(os.path.expanduser(str(image_url)))
+        except Exception:
+            local_path = Path(image_url)
+
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
+            from tools.file_operations import _is_path_denied
+            if _is_path_denied(str(local_path)):
+                raise ValueError(f"Access denied: '{image_url}' is a protected directory/file.")
+
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
