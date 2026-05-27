@@ -36,18 +36,19 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Write-path deny list — blocks writes to sensitive system/credential files
+# Path access control — blocks access to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
+PATH_DENIED_PATHS = {
     os.path.realpath(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
         os.path.join(_HOME, ".ssh", "id_rsa"),
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
         os.path.join(_HOME, ".hermes", ".env"),
+        os.path.join(_HOME, ".hermes", "config.yaml"),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),
         os.path.join(_HOME, ".profile"),
@@ -63,7 +64,7 @@ WRITE_DENIED_PATHS = {
     ]
 }
 
-WRITE_DENIED_PREFIXES = [
+PATH_DENIED_PREFIXES = [
     os.path.realpath(p) + os.sep for p in [
         os.path.join(_HOME, ".ssh"),
         os.path.join(_HOME, ".aws"),
@@ -75,15 +76,20 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(path))
-    if resolved in WRITE_DENIED_PATHS:
-        return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
+def _is_path_denied(path: str) -> bool:
+    """Return True if path is on the access deny list (read/write/delete)."""
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+        if resolved in PATH_DENIED_PATHS:
             return True
-    return False
+        for prefix in PATH_DENIED_PREFIXES:
+            # Check for exact prefix or subpath
+            if resolved == prefix.rstrip(os.sep) or resolved.startswith(prefix):
+                return True
+        return False
+    except Exception:
+        # Fallback for paths that can't be resolved — safer to deny than allow
+        return True
 
 
 # =============================================================================
@@ -447,6 +453,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block access to sensitive paths
+        if _is_path_denied(path):
+            return ReadResult(error=f"Access denied: '{path}' is a protected system/credential file.")
         
         # Clamp limit
         limit = min(limit, MAX_LINES)
@@ -637,8 +647,8 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        if _is_path_denied(path):
+            return WriteResult(error=f"Access denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
         parent = os.path.dirname(path)
@@ -694,8 +704,8 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        if _is_path_denied(path):
+            return PatchResult(error=f"Access denied: '{path}' is a protected system/credential file.")
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
@@ -824,6 +834,13 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block access to sensitive paths
+        if _is_path_denied(path):
+            return SearchResult(
+                error=f"Access denied: '{path}' is a protected directory/file.",
+                total_count=0
+            )
         
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
@@ -834,10 +851,22 @@ class ShellFileOperations(FileOperations):
             )
         
         if target == "files":
-            return self._search_files(pattern, path, limit, offset)
+            result = self._search_files(pattern, path, limit, offset)
         else:
-            return self._search_content(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+            result = self._search_content(pattern, path, file_glob, limit, offset,
+                                          output_mode, context)
+
+        # Filter results to remove protected paths that might have been found
+        # (e.g. if searching in home directory)
+        if hasattr(result, 'files') and result.files:
+            result.files = [f for f in result.files if not _is_path_denied(f)]
+            result.total_count = len(result.files)
+
+        if hasattr(result, 'matches') and result.matches:
+            result.matches = [m for m in result.matches if not _is_path_denied(m.path)]
+            result.total_count = len(result.matches)
+
+        return result
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
