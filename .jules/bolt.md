@@ -1,0 +1,3 @@
+## 2026-05-25 - SessionDB Path Caching
+**Learning:** Initializing `SessionDB` multiple times per process (common in multi-platform gateway or test suites) causes significant overhead due to redundant `PRAGMA` calls and schema validation (`CREATE TABLE IF NOT EXISTS`, migration checks, `FTS5` setup).
+**Action:** Implement a class-level set `_initialized_paths` to cache absolute database paths that have already completed `_init_schema()`. Always bypass the cache for `:memory:` and `''` (empty string) as they represent fresh databases. Using `db_path.resolve()` provides a more robust and idiomatic way to handle path normalization than `os.path.abspath`.
