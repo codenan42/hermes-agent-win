@@ -100,6 +100,10 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Cache of paths that have already had _init_schema run in this process.
+    # Avoids redundant PRAGMA and schema checks per instantiation.
+    _initialized_paths: set[str] = set()
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +117,18 @@ class SessionDB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
-        self._init_schema()
+        # Skip schema init if already done for this path in this process.
+        # :memory: and '' (empty string) always need init as they are fresh DBs.
+        path_str = str(self.db_path)
+        if path_str in (":memory:", ""):
+            resolved = path_str
+        else:
+            # Use absolute path to ensure different relative paths match
+            resolved = str(self.db_path.resolve())
+
+        if resolved not in self._initialized_paths or resolved in (":memory:", ""):
+            self._init_schema()
+            self._initialized_paths.add(resolved)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
