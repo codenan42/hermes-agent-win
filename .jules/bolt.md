@@ -1,0 +1,3 @@
+## 2026-05-25 - [Skill Index I/O Consolidation]
+**Learning:** The `build_skills_system_prompt` function was scanning 91+ skill directories and reading/parsing each `SKILL.md` file twice (once for metadata and once for conditional activation checks). In environments with many skills, this double I/O becomes a significant bottleneck during system prompt assembly. Additionally, `yaml.SafeLoader` is ~8x slower than `yaml.CSafeLoader` for these small frontmatter blocks.
+**Action:** Always reuse parsed metadata for subsequent checks in the same loop. Prefer `yaml.CSafeLoader` (with a fallback) for modules that perform batch parsing of many small YAML blocks to minimize prompt construction latency.
