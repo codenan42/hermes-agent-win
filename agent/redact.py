@@ -43,20 +43,26 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION|CSRF|XSRF)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*\s*=\s*)(?:(['\"])(.*?)\2|(\S+))",
     re.IGNORECASE,
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material|cookie|session|csrf|xsrf)"
 _JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    rf'((?:["\']){_JSON_KEY_NAMES}(?:["\'])\s*:\s*)(?:(["\'])(.*?)\2|([^"\', \s}}]+))',
     re.IGNORECASE,
 )
 
 # Authorization headers
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization:\s*(?:Bearer|Basic)\s+)(\S+)",
+    r"(Authorization:\s*(?:Bearer|Basic)\s+)(?:(['\"])(.*?)\2|(\S+))",
+    re.IGNORECASE,
+)
+
+# Cookie headers
+_COOKIE_RE = re.compile(
+    r"((?:Set-)?Cookie:\s*)(?:(['\"])(.*?)\2|([^;\s]+))",
     re.IGNORECASE,
 )
 
@@ -74,7 +80,7 @@ _PRIVATE_KEY_RE = re.compile(
 # Database connection strings: protocol://user:PASSWORD@host
 # Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://(?:[^:]+:)?)([^@]+)(@)",
     re.IGNORECASE,
 )
 
@@ -90,9 +96,31 @@ _PREFIX_RE = re.compile(
 
 def _mask_token(token: str) -> str:
     """Mask a token, preserving prefix for long tokens."""
+    if not token:
+        return token
+    # If it's already masked (contains '...'), don't mask again
+    if "..." in token:
+        return token
     if len(token) < 18:
         return "***"
     return f"{token[:6]}...{token[-4:]}"
+
+
+def _redact_quoted_or_raw(m: re.Match) -> str:
+    """Helper to redact either a quoted or unquoted secret value."""
+    prefix = m.group(1)
+    quote = m.group(2)
+    quoted_value = m.group(3)
+    raw_value = m.group(4)
+
+    value = quoted_value if quote else raw_value
+    if not value:
+        return m.group(0)
+
+    redacted = _mask_token(value)
+    if quote:
+        return f"{prefix}{quote}{redacted}{quote}"
+    return f"{prefix}{redacted}"
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -106,26 +134,17 @@ def redact_sensitive_text(text: str) -> str:
     if os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off"):
         return text
 
-    # Known prefixes (sk-, ghp_, etc.)
-    text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
-
     # ENV assignments: OPENAI_API_KEY=sk-abc...
-    def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
-        return f"{name}={quote}{_mask_token(value)}{quote}"
-    text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+    text = _ENV_ASSIGN_RE.sub(_redact_quoted_or_raw, text)
 
     # JSON fields: "apiKey": "value"
-    def _redact_json(m):
-        key, value = m.group(1), m.group(2)
-        return f'{key}: "{_mask_token(value)}"'
-    text = _JSON_FIELD_RE.sub(_redact_json, text)
+    text = _JSON_FIELD_RE.sub(_redact_quoted_or_raw, text)
 
     # Authorization headers
-    text = _AUTH_HEADER_RE.sub(
-        lambda m: m.group(1) + _mask_token(m.group(2)),
-        text,
-    )
+    text = _AUTH_HEADER_RE.sub(_redact_quoted_or_raw, text)
+
+    # Cookie headers
+    text = _COOKIE_RE.sub(_redact_quoted_or_raw, text)
 
     # Telegram bot tokens
     def _redact_telegram(m):
@@ -147,6 +166,10 @@ def redact_sensitive_text(text: str) -> str:
             return phone[:2] + "****" + phone[-2:]
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    # Known prefixes (sk-, ghp_, etc.) - applied last to avoid double-redaction
+    # when secrets appear in structured ENV/JSON formats already handled above.
+    text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
     return text
 
