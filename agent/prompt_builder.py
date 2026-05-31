@@ -200,19 +200,26 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         return True, {}, ""
 
 
-def _read_skill_conditions(skill_file: Path) -> dict:
+def _get_skill_conditions(frontmatter: dict) -> dict:
     """Extract conditional activation fields from SKILL.md frontmatter."""
+    hermes = frontmatter.get("metadata", {}).get("hermes", {})
+    return {
+        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+        "requires_toolsets": hermes.get("requires_toolsets", []),
+        "fallback_for_tools": hermes.get("fallback_for_tools", []),
+        "requires_tools": hermes.get("requires_tools", []),
+    }
+
+
+def _read_skill_conditions(skill_file: Path) -> dict:
+    """Extract conditional activation fields from SKILL.md frontmatter.
+    Legacy wrapper for test compatibility.
+    """
     try:
         from tools.skills_tool import _parse_frontmatter
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
-        hermes = frontmatter.get("metadata", {}).get("hermes", {})
-        return {
-            "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
-            "requires_toolsets": hermes.get("requires_toolsets", []),
-            "fallback_for_tools": hermes.get("fallback_for_tools", []),
-            "requires_tools": hermes.get("requires_tools", []),
-        }
+        return _get_skill_conditions(frontmatter)
     except Exception as e:
         logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
         return {}
@@ -272,11 +279,11 @@ def build_skills_system_prompt(
     # -> category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
+        is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
         if not is_compatible:
             continue
         # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
+        conditions = _get_skill_conditions(frontmatter)
         if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
