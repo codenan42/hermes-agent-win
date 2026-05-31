@@ -36,18 +36,19 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Write-path deny list — blocks writes to sensitive system/credential files
+# Path access control — blocks access to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
+PATH_DENIED_PATHS = {
     os.path.realpath(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
         os.path.join(_HOME, ".ssh", "id_rsa"),
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
         os.path.join(_HOME, ".hermes", ".env"),
+        os.path.join(_HOME, ".hermes", "config.yaml"),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),
         os.path.join(_HOME, ".profile"),
@@ -63,7 +64,7 @@ WRITE_DENIED_PATHS = {
     ]
 }
 
-WRITE_DENIED_PREFIXES = [
+PATH_DENIED_PREFIXES = [
     os.path.realpath(p) + os.sep for p in [
         os.path.join(_HOME, ".ssh"),
         os.path.join(_HOME, ".aws"),
@@ -75,15 +76,22 @@ WRITE_DENIED_PREFIXES = [
 ]
 
 
-def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(path))
-    if resolved in WRITE_DENIED_PATHS:
-        return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
+def is_path_denied(path: str) -> bool:
+    """Return True if access to path is denied (sensitive/credential file)."""
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+        if resolved in PATH_DENIED_PATHS:
             return True
+        for prefix in PATH_DENIED_PREFIXES:
+            if resolved.startswith(prefix):
+                return True
+    except Exception:
+        return True  # Fail closed
     return False
+
+
+# Legacy alias for backward compatibility within this module
+_is_write_denied = is_path_denied
 
 
 # =============================================================================
@@ -447,6 +455,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+
+        # Block access to sensitive paths
+        if is_path_denied(path):
+            return ReadResult(error=f"Access denied: '{path}' is a protected system/credential file.")
         
         # Clamp limit
         limit = min(limit, MAX_LINES)
@@ -637,8 +649,8 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        if is_path_denied(path):
+            return WriteResult(error=f"Access denied: '{path}' is a protected system/credential file.")
 
         # Create parent directories
         parent = os.path.dirname(path)
@@ -694,8 +706,8 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        if is_path_denied(path):
+            return PatchResult(error=f"Access denied: '{path}' is a protected system/credential file.")
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
@@ -872,12 +884,18 @@ class ShellFileOperations(FileOperations):
         for line in result.stdout.strip().split('\n'):
             if not line:
                 continue
+
+            match_path = line
             # Parse "timestamp path" format
             parts = line.split(' ', 1)
             if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                files.append(parts[1])
-            else:
-                files.append(line)
+                match_path = parts[1]
+
+            # Skip denied paths
+            if is_path_denied(match_path):
+                continue
+
+            files.append(match_path)
         
         return SearchResult(
             files=files,
@@ -941,8 +959,10 @@ class ShellFileOperations(FileOperations):
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in result.stdout.strip().split('\n') if f]
-            total = len(all_files)
-            page = all_files[offset:offset + limit]
+            # Filter denied paths
+            filtered_files = [f for f in all_files if not is_path_denied(f)]
+            total = len(filtered_files)
+            page = filtered_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
@@ -951,8 +971,12 @@ class ShellFileOperations(FileOperations):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
+                        match_path = parts[0]
+                        # Skip denied paths
+                        if is_path_denied(match_path):
+                            continue
                         try:
-                            counts[parts[0]] = int(parts[1])
+                            counts[match_path] = int(parts[1])
                         except ValueError:
                             pass
             return SearchResult(counts=counts, total_count=sum(counts.values()))
@@ -974,8 +998,12 @@ class ShellFileOperations(FileOperations):
                 # Try match line first (colon-separated: file:line:content)
                 m = _match_re.match(line)
                 if m:
+                    match_path = (m.group(1) or '') + m.group(2)
+                    # Skip denied paths
+                    if is_path_denied(match_path):
+                        continue
                     matches.append(SearchMatch(
-                        path=(m.group(1) or '') + m.group(2),
+                        path=match_path,
                         line_number=int(m.group(3)),
                         content=m.group(4)[:500]
                     ))
@@ -986,8 +1014,12 @@ class ShellFileOperations(FileOperations):
                 if context > 0:
                     m = _ctx_re.match(line)
                     if m:
+                        match_path = (m.group(1) or '') + m.group(2)
+                        # Skip denied paths
+                        if is_path_denied(match_path):
+                            continue
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
+                            path=match_path,
                             line_number=int(m.group(3)),
                             content=m.group(4)[:500]
                         ))
@@ -1037,8 +1069,10 @@ class ShellFileOperations(FileOperations):
         
         if output_mode == "files_only":
             all_files = [f for f in result.stdout.strip().split('\n') if f]
-            total = len(all_files)
-            page = all_files[offset:offset + limit]
+            # Filter denied paths
+            filtered_files = [f for f in all_files if not is_path_denied(f)]
+            total = len(filtered_files)
+            page = filtered_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
@@ -1047,8 +1081,12 @@ class ShellFileOperations(FileOperations):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
+                        match_path = parts[0]
+                        # Skip denied paths
+                        if is_path_denied(match_path):
+                            continue
                         try:
-                            counts[parts[0]] = int(parts[1])
+                            counts[match_path] = int(parts[1])
                         except ValueError:
                             pass
             return SearchResult(counts=counts, total_count=sum(counts.values()))
@@ -1068,8 +1106,12 @@ class ShellFileOperations(FileOperations):
                 
                 m = _match_re.match(line)
                 if m:
+                    match_path = (m.group(1) or '') + m.group(2)
+                    # Skip denied paths
+                    if is_path_denied(match_path):
+                        continue
                     matches.append(SearchMatch(
-                        path=(m.group(1) or '') + m.group(2),
+                        path=match_path,
                         line_number=int(m.group(3)),
                         content=m.group(4)[:500]
                     ))
@@ -1078,8 +1120,12 @@ class ShellFileOperations(FileOperations):
                 if context > 0:
                     m = _ctx_re.match(line)
                     if m:
+                        match_path = (m.group(1) or '') + m.group(2)
+                        # Skip denied paths
+                        if is_path_denied(match_path):
+                            continue
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
+                            path=match_path,
                             line_number=int(m.group(3)),
                             content=m.group(4)[:500]
                         ))
