@@ -43,14 +43,14 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION|CSRF|XSRF)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(.*?)\2(?=\s|$|,|\)|\]|}})",
     re.IGNORECASE,
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material|cookie|session|csrf|xsrf)"
 _JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    rf'((?:["\']){_JSON_KEY_NAMES}(?:["\']))\s*:\s*(["\'])(.*?)\2',
     re.IGNORECASE,
 )
 
@@ -74,7 +74,7 @@ _PRIVATE_KEY_RE = re.compile(
 # Database connection strings: protocol://user:PASSWORD@host
 # Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://(?:[^:]+:)?)([^@/]+)(@)",
     re.IGNORECASE,
 )
 
@@ -117,8 +117,8 @@ def redact_sensitive_text(text: str) -> str:
 
     # JSON fields: "apiKey": "value"
     def _redact_json(m):
-        key, value = m.group(1), m.group(2)
-        return f'{key}: "{_mask_token(value)}"'
+        key, quote, value = m.group(1), m.group(2), m.group(3)
+        return f'{key}: {quote}{_mask_token(value)}{quote}'
     text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers

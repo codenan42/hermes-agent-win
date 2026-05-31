@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from tools.file_operations import (
-    _is_write_denied,
-    WRITE_DENIED_PATHS,
-    WRITE_DENIED_PREFIXES,
+    is_path_denied,
+    PATH_DENIED_PATHS,
+    PATH_DENIED_PREFIXES,
     ReadResult,
     WriteResult,
     PatchResult,
@@ -29,33 +29,33 @@ from tools.file_operations import (
 class TestIsWriteDenied:
     def test_ssh_authorized_keys_denied(self):
         path = os.path.join(str(Path.home()), ".ssh", "authorized_keys")
-        assert _is_write_denied(path) is True
+        assert is_path_denied(path) is True
 
     def test_ssh_id_rsa_denied(self):
         path = os.path.join(str(Path.home()), ".ssh", "id_rsa")
-        assert _is_write_denied(path) is True
+        assert is_path_denied(path) is True
 
     def test_netrc_denied(self):
         path = os.path.join(str(Path.home()), ".netrc")
-        assert _is_write_denied(path) is True
+        assert is_path_denied(path) is True
 
     def test_aws_prefix_denied(self):
         path = os.path.join(str(Path.home()), ".aws", "credentials")
-        assert _is_write_denied(path) is True
+        assert is_path_denied(path) is True
 
     def test_kube_prefix_denied(self):
         path = os.path.join(str(Path.home()), ".kube", "config")
-        assert _is_write_denied(path) is True
+        assert is_path_denied(path) is True
 
     def test_normal_file_allowed(self, tmp_path):
         path = str(tmp_path / "safe_file.txt")
-        assert _is_write_denied(path) is False
+        assert is_path_denied(path) is False
 
     def test_project_file_allowed(self):
-        assert _is_write_denied("/tmp/project/main.py") is False
+        assert is_path_denied("/tmp/project/main.py") is False
 
     def test_tilde_expansion(self):
-        assert _is_write_denied("~/.ssh/authorized_keys") is True
+        assert is_path_denied("~/.ssh/authorized_keys") is True
 
 
 
@@ -323,13 +323,43 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
-class TestShellFileOpsWriteDenied:
+class TestShellFileOpsPathDenied:
+    def test_read_file_denied_path(self, file_ops):
+        result = file_ops.read_file("~/.ssh/authorized_keys")
+        assert result.error is not None
+        assert "Access denied" in result.error
+
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")
         assert result.error is not None
-        assert "denied" in result.error.lower()
+        assert "Access denied" in result.error
 
     def test_patch_replace_denied_path(self, file_ops):
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
         assert result.error is not None
-        assert "denied" in result.error.lower()
+        assert "Access denied" in result.error
+
+    def test_search_content_denied_path_filtering(self, mock_env):
+        """search() should filter out matches in denied paths."""
+        ssh_path = os.path.join(str(Path.home()), ".ssh", "id_rsa")
+        # Simulate rg output containing a sensitive file
+        mock_output = f"safe.txt:1:hello\n{ssh_path}:1:SECRET_KEY\n"
+
+        def side_effect(command, **kwargs):
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            if "rg" in command:
+                return {"output": mock_output, "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+
+        result = ops.search("SECRET", path=".")
+        assert result.total_count == 1
+        assert result.matches[0].path == "safe.txt"
+        # The sensitive path should have been filtered out
+        for match in result.matches:
+            assert match.path != ssh_path

@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
+from tools.file_operations import is_path_denied
 
 logger = logging.getLogger(__name__)
 
@@ -242,12 +243,22 @@ async def vision_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
-        local_path = Path(image_url)
-        if local_path.is_file():
-            # Local file path (e.g. from platform image cache) -- skip download
-            logger.info("Using local image file: %s", image_url)
-            temp_image_path = local_path
-            should_cleanup = False  # Don't delete cached/local files
+        # Expand user path in case model provided ~/path
+        resolved_url = os.path.expanduser(image_url)
+        local_path = Path(resolved_url)
+
+        if local_path.is_file() or (not _validate_image_url(image_url) and not image_url.startswith(("http://", "https://"))):
+            # Block access to sensitive paths if it looks like a local file
+            if is_path_denied(resolved_url):
+                raise ValueError(f"Access denied: '{image_url}' is a protected system/credential file.")
+
+            if local_path.is_file():
+                # Local file path (e.g. from platform image cache) -- skip download
+                logger.info("Using local image file: %s", image_url)
+                temp_image_path = local_path
+                should_cleanup = False  # Don't delete cached/local files
+            else:
+                raise ValueError(f"File not found: {image_url}")
         elif _validate_image_url(image_url):
             # Remote URL -- download to a temporary location
             logger.info("Downloading image from URL...")
