@@ -100,6 +100,10 @@ class SessionDB:
     single writer via WAL mode). Each method opens its own cursor.
     """
 
+    # Cache of absolute database paths that have already been initialized in
+    # this process. Prevents redundant schema checks and PRAGMA calls.
+    _initialized_paths: set[str] = set()
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,10 +114,18 @@ class SessionDB:
             timeout=10.0,
         )
         self._conn.row_factory = sqlite3.Row
+
+        # Skip redundant initialization if this database was already set up
+        # earlier in the same process (common in gateway/batch modes).
+        abs_path = str(self.db_path.resolve())
+        if abs_path in self._initialized_paths:
+            return
+
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._init_schema()
+        self._initialized_paths.add(abs_path)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
