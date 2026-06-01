@@ -39,6 +39,7 @@ from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm
+from tools.file_operations import is_path_denied
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -242,10 +243,19 @@ async def vision_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
-        local_path = Path(image_url)
+        # Expand user path (e.g. ~/photo.jpg) before checking
+        expanded_url = os.path.expanduser(image_url)
+
+        # Block access to sensitive local files via vision tool
+        # Check this BEFORE is_file() so we don't leak existence and handle
+        # non-existent protected paths consistently.
+        if is_path_denied(expanded_url):
+            raise PermissionError(f"Access denied: '{image_url}' is a protected system/credential file.")
+
+        local_path = Path(expanded_url)
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
-            logger.info("Using local image file: %s", image_url)
+            logger.info("Using local image file: %s", expanded_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
         elif _validate_image_url(image_url):
